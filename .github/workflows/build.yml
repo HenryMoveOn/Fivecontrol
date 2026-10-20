@@ -115,41 +115,34 @@ jobs:
           cat > Tweak.xm <<'EOF_TWEAK'
           #import <UIKit/UIKit.h>
           #import <objc/runtime.h>
-          #import <math.h>
 
           typedef struct { unsigned long long width; unsigned long long height; } FC_LayoutSize;
           typedef struct { unsigned long long x; unsigned long long y; } FC_LayoutPoint;
 
-          #pragma mark - Tunables
+          static BOOL fcEnabled = YES;
+          static NSUInteger fcColumns = 5;
+          static CGFloat fcScale = 0.8;
+          static CGFloat fcCorner = 33.0;
+          static CGFloat fcShiftDown = 20.0;
+          static CGFloat fcEdge = 0;
+          static CGFloat fcSpacing = 0;
 
-          static BOOL       fcEnabled     = YES;
-          static NSUInteger fcColumns     = 5;     // target column count
-          static NSUInteger fcBaseColumns = 4;     // stock column count
-          static CGFloat    fcScale       = 0.8;   // spacing scale; item edge is derived from it
-          static CGFloat    fcCorner      = 33.0;  // max compact corner radius
-          static CGFloat    fcFill        = 0.88;  // max fraction of the module the icon block may occupy
-          static CGFloat    fcMinScale    = 0.50;  // safety clamp for the icon block
-          static BOOL       fcDebug       = NO;
+          static inline CGFloat fc_getIvar(id obj, const char *name) {
+              Ivar iv = class_getInstanceVariable([obj class], name);
+              if (!iv) return 0;
+              return *(CGFloat *)((char *)(__bridge void *)obj + ivar_getOffset(iv));
+          }
 
-          #pragma mark - Layout options bookkeeping
-          /* These ALWAYS hold the stock (un-scaled) values. Everything derived is
-             recomputed from them, so repeated system setter calls can never compound. */
-
-          static CGFloat fcBaseEdge       = 0;
-          static CGFloat fcBaseSpacing    = 0;
-          static BOOL    fcBaseSpacingSet = NO;
-          static CGFloat fcAppliedEdge    = -1;    // last value we pushed back, used for re-entry detection
-          static CGFloat fcAppliedSpacing = -1;
-          static BOOL    fcApplying       = NO;    // guards our own re-entrant setter calls
-          static BOOL    fcBusy           = NO;    // guards re-entrant layout passes
-
-          static char kFCManagedKey;               // marks views whose scale/position we own
-
-          #pragma mark - Interfaces
+          static inline void fc_setIvar(id obj, const char *name, CGFloat v) {
+              Ivar iv = class_getInstanceVariable([obj class], name);
+              if (!iv) return;
+              *(CGFloat *)((char *)(__bridge void *)obj + ivar_getOffset(iv)) = v;
+          }
 
           @interface CCUIMutableLayoutOptions : NSObject
           - (void)setItemEdgeSize:(CGFloat)edgeSize;
           - (void)setItemSpacing:(CGFloat)itemSpacing;
+          - (void)fc_recalculate;
           @end
 
           @interface CCUIControlCenterPositionProviderPackingRule : NSObject
@@ -161,111 +154,48 @@ jobs:
           @end
 
           @interface CCUIButtonModuleView : UIView
-          @end
-
-          @interface CCUIBaseSliderView : UIView
+          - (void)_setGlyphImage:(UIImage *)image;
           @end
 
           @interface CCUILabeledRoundButton : UIView
           @end
 
-          @interface CCUIContentModuleContentContainerView : UIView
-          - (void)fc_centerContent;
+          @interface CCUIBaseSliderView : UIView
           @end
 
           @interface CCUIContentModuleContainerViewController : UIViewController
           - (CGFloat)_continuousCornerRadiusForCompactState;
           @end
 
-          #pragma mark - Helpers
-
-          static inline void fc_markManaged(UIView *v) {
-              objc_setAssociatedObject(v, &kFCManagedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-          }
-
-          static BOOL fc_isManaged(UIView *v) {
-              UIView *c = v;
-              for (int i = 0; i < 5 && c; i++, c = c.superview) {
-                  if ([objc_getAssociatedObject(c, &kFCManagedKey) boolValue]) return YES;
-              }
-              return NO;
-          }
-
-          /* Outermost button-like views only: never descend into an already matched view,
-             so a round button nested inside a button module view is not counted twice. */
-          static NSArray *fc_findButtons(UIView *root) {
-              Class moduleCls = NSClassFromString(@"CCUIButtonModuleView");
-              Class roundCls  = NSClassFromString(@"CCUILabeledRoundButton");
-              if (!moduleCls && !roundCls) return @[];
-
-              NSMutableArray *out   = [NSMutableArray array];
-              NSMutableArray *stack = [NSMutableArray arrayWithObject:root];
-              while (stack.count) {
-                  UIView *v = stack.lastObject;
-                  [stack removeLastObject];
-                  for (UIView *s in v.subviews) {
-                      BOOL hit = (moduleCls && [s isKindOfClass:moduleCls]) ||
-                                 (roundCls  && [s isKindOfClass:roundCls]);
-                      if (hit) [out addObject:s];
-                      else     [stack addObject:s];
-                  }
-              }
-              return out;
-          }
-
-          /* Push the derived edge/spacing back through the public setters so every
-             consumer (module grid, KVO, internal constraints) sees one consistent value. */
-          static void fc_applyLayoutOptions(id opts) {
-              if (!opts || !fcEnabled || fcColumns == 0 || fcBaseEdge <= 0) return;
-
-              CGFloat spacing = fcBaseSpacingSet ? fcBaseSpacing : 0.0;
-              CGFloat total   = fcBaseEdge * (CGFloat)fcBaseColumns
-                              + spacing * (CGFloat)(fcBaseColumns - 1);
-              CGFloat newSp   = spacing * fcScale;
-              CGFloat newEdge = (total - newSp * (CGFloat)(fcColumns - 1)) / (CGFloat)fcColumns;
-              if (newEdge <= 0) return;
-
-              fcApplying      = YES;
-              fcAppliedEdge   = newEdge;
-              [opts setItemEdgeSize:newEdge];
-              if (fcBaseSpacingSet) {
-                  fcAppliedSpacing = newSp;
-                  [opts setItemSpacing:newSp];
-              }
-              fcApplying = NO;
-          }
-
           %group Fivecontrol
-
-          #pragma mark - Module grid: 4 -> 5 columns
 
           %hook CCUIMutableLayoutOptions
 
-          // Keep the orig call on its own line at the end of the method: a one-line
-          // block "{ orig; return; }" makes the Logos preprocessor drop the closing
-          // brace and the next method then fails to compile.
           - (void)setItemEdgeSize:(CGFloat)edgeSize {
-              // fcAppliedEdge == value we pushed ourselves -> already scaled, never twice
-              BOOL ours = (fcAppliedEdge > 0 && fabs(edgeSize - fcAppliedEdge) < 0.01);
-              if (fcEnabled && !fcApplying && !ours) {
-                  fcBaseEdge = edgeSize;
-                  fc_applyLayoutOptions(self);
-                  return;
-              }
               %orig;
+              [self fc_recalculate];
           }
 
           - (void)setItemSpacing:(CGFloat)itemSpacing {
-              BOOL ours = (fcAppliedSpacing > 0 && fabs(itemSpacing - fcAppliedSpacing) < 0.01);
-              if (fcEnabled && !fcApplying && !ours) {
-                  fcBaseSpacing    = itemSpacing;
-                  fcBaseSpacingSet = YES;
-                  if (fcBaseEdge > 0) {
-                      fc_applyLayoutOptions(self);
-                      return;
-                  }
-              }
               %orig;
+              [self fc_recalculate];
+          }
+
+          %new
+          - (void)fc_recalculate {
+              if (!fcEnabled || fcColumns < 5) return;
+              CGFloat edgeSize = fc_getIvar(self, "_itemEdgeSize");
+              CGFloat itemSpacing = fc_getIvar(self, "_itemSpacing");
+              if (edgeSize <= 0 || itemSpacing <= 0) return;
+              CGFloat totalWidth = edgeSize * 4 + itemSpacing * 3;
+              CGFloat newSpacing = itemSpacing * fcScale;
+              CGFloat newEdge = (totalWidth - newSpacing * 4) / (CGFloat)fcColumns;
+              if (newEdge > 0) {
+                  fcEdge = newEdge;
+                  fcSpacing = newSpacing;
+                  fc_setIvar(self, "_itemEdgeSize", newEdge);
+                  fc_setIvar(self, "_itemSpacing", newSpacing);
+              }
           }
 
           %end
@@ -273,7 +203,9 @@ jobs:
           %hook CCUIControlCenterPositionProviderPackingRule
 
           - (id)initWithPackFrom:(unsigned long long)arg1 packingOrder:(unsigned long long)arg2 sizeLimit:(FC_LayoutSize)arg3 {
-              if (fcEnabled && arg3.width > 0 && arg3.width < 10) arg3.width = fcColumns;
+              if (fcEnabled) {
+                  if (arg3.width < 10) arg3.width = fcColumns;
+              }
               return %orig;
           }
 
@@ -287,13 +219,13 @@ jobs:
                                                    startPosition:(FC_LayoutPoint)arg4
                                                      maximumSize:(FC_LayoutSize)arg5
                                                 outputLayoutSize:(FC_LayoutSize *)arg6 {
-              if (fcEnabled && arg5.width > 0 && arg5.width < 10) arg5.width = fcColumns;
+              if (fcEnabled) {
+                  if (arg5.width < 10) arg5.width = fcColumns;
+              }
               return %orig;
           }
 
           %end
-
-          #pragma mark - Module chrome
 
           %hook CCUIContentModuleContainerViewController
 
@@ -301,22 +233,24 @@ jobs:
               if (!fcEnabled) return %orig;
               CGFloat w = self.view.bounds.size.width;
               if (w <= 0) return %orig;
-              return MIN(fcCorner, w * 0.30);
+              CGFloat r = w * 0.30;
+              return (r > fcCorner) ? fcCorner : r;
           }
 
           %end
 
-          #pragma mark - Fallback glyph scaling (1x1 modules, sliders)
-
           %hook CCUIButtonModuleView
 
-          - (void)didMoveToWindow {
+          - (void)layoutSubviews {
               %orig;
-              if (!fcEnabled || fc_isManaged(self)) return;   // already scaled by fc_centerContent
+              if (!fcEnabled) return;
               Class capCls = NSClassFromString(@"CCUICAPackageView");
-              if (!capCls) return;
               for (UIView *sub in self.subviews) {
-                  if ([sub isKindOfClass:capCls]) sub.transform = CGAffineTransformMakeScale(fcScale, fcScale);
+                  if (capCls && [sub isKindOfClass:capCls]) {
+                      CGAffineTransform t = CGAffineTransformMakeScale(fcScale, fcScale);
+                      t = CGAffineTransformConcat(t, CGAffineTransformMakeTranslation(0, fcShiftDown));
+                      sub.transform = t;
+                  }
               }
           }
 
@@ -326,7 +260,7 @@ jobs:
 
           - (void)didMoveToWindow {
               %orig;
-              if (!fcEnabled || fc_isManaged(self)) return;   // part of a managed 2x2 block
+              if (!fcEnabled) return;
               self.transform = CGAffineTransformMakeScale(fcScale, fcScale);
           }
 
@@ -336,93 +270,20 @@ jobs:
 
           - (void)didMoveToWindow {
               %orig;
-              if (!fcEnabled || fc_isManaged(self)) return;
+              if (!fcEnabled) return;
               Class capCls = NSClassFromString(@"CCUICAPackageView");
-              if (!capCls) return;
               for (UIView *sub in self.subviews) {
-                  if ([sub isKindOfClass:capCls]) sub.transform = CGAffineTransformMakeScale(fcScale, fcScale);
+                  if (capCls && [sub isKindOfClass:capCls]) {
+                      sub.transform = CGAffineTransformMakeScale(fcScale, fcScale);
+                  }
               }
           }
 
           %end
 
-          #pragma mark - 2x2 icon block: fit + centre
 
-          %hook CCUIContentModuleContentContainerView
 
-          - (void)didMoveToWindow {
-              %orig;
-              [self fc_centerContent];
-          }
 
-          - (void)layoutSubviews {
-              %orig;
-              [self fc_centerContent];
-          }
-
-          %new
-          - (void)fc_centerContent {
-              if (!fcEnabled || fcBusy) return;
-              CGSize size = self.bounds.size;
-              if (size.width <= 0 || size.height <= 0) return;
-              if (size.width > size.height * 1.2) return;      // expanded / non-square module: untouched
-
-              NSArray *btns = fc_findButtons(self);
-              if (btns.count < 2) return;                      // 1x1 module: legacy path handles it
-
-              fcBusy = YES;
-
-              // Common superview of the whole icon block.
-              UIView *grid = [btns[0] superview];
-              for (UIView *b in btns) {
-                  if (b.superview != grid) { grid = nil; break; }
-              }
-              if (grid == self) grid = nil;                    // never transform the container itself
-
-              // 1) neutral state -> pure layout geometry
-              UIView *scaleTarget = grid;
-              if (scaleTarget) scaleTarget.transform = CGAffineTransformIdentity;
-              else             for (UIView *b in btns) b.transform = CGAffineTransformIdentity;
-
-              CGRect u = CGRectNull;
-              for (UIView *b in btns) {
-                  CGRect r = [self convertRect:b.bounds fromView:b];
-                  u = CGRectIsNull(u) ? r : CGRectUnion(u, r);
-              }
-              if (CGRectIsNull(u) || u.size.width <= 0 || u.size.height <= 0) { fcBusy = NO; return; }
-
-              // 2) shrink the block (sizes AND gaps) only as far as needed to fit
-              CGFloat s = MIN((CGFloat)1.0, MIN(size.width * fcFill / u.size.width,
-                                                size.height * fcFill / u.size.height));
-              if (s < fcMinScale) s = fcMinScale;
-
-              CGAffineTransform scaled = CGAffineTransformMakeScale(s, s);
-              if (scaleTarget) scaleTarget.transform = scaled;
-              else             for (UIView *b in btns) b.transform = scaled;
-
-              // 3) measure the block again WITH the scale applied, then translate the
-              //    remaining offset away. Works whatever the layer anchorPoint is.
-              CGRect v = CGRectNull;
-              for (UIView *b in btns) {
-                  CGRect r = [self convertRect:b.bounds fromView:b];
-                  v = CGRectIsNull(v) ? r : CGRectUnion(v, r);
-              }
-              if (CGRectIsNull(v)) { fcBusy = NO; return; }
-              CGPoint d = CGPointMake(size.width * 0.5 - CGRectGetMidX(v),
-                                      size.height * 0.5 - CGRectGetMidY(v));
-
-              CGAffineTransform t = CGAffineTransformTranslate(scaled, d.x, d.y);
-              if (scaleTarget) { scaleTarget.transform = t; fc_markManaged(scaleTarget); }
-              else             for (UIView *b in btns) { b.transform = t; fc_markManaged(b); }
-
-              if (fcDebug) NSLog(@"[Fivecontrol] n=%lu s=%.3f d=(%.1f,%.1f) union=%@ scaled=%@ bounds=%@",
-                                 (unsigned long)btns.count, s, d.x, d.y, NSStringFromCGRect(u),
-                                 NSStringFromCGRect(v), NSStringFromCGRect(self.bounds));
-
-              fcBusy = NO;
-          }
-
-          %end
 
           %end
 
