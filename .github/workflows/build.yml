@@ -89,7 +89,7 @@ jobs:
           cat > control <<'EOF_CONTROL'
           Package: com.henrymoveon.fivecontrol
           Name: Fivecontrol
-          Version: 1.0.2
+          Version: 1.0.3
           Architecture: iphoneos-arm64e
           Description: Five columns in Control Center, 80 percent module scale, 33pt corner radius.
           Maintainer: HenryMoveOn
@@ -251,6 +251,35 @@ jobs:
               }
           }
 
+          - (void)layoutSubviews {
+              %orig;
+              if (!fcEnabled) return;
+              CGFloat h = self.bounds.size.height;
+              if (h <= 0) return;
+              CGFloat minY = CGFLOAT_MAX;
+              CGFloat maxY = -CGFLOAT_MAX;
+              for (UIView *sub in self.subviews) {
+                  if (sub.hidden) continue;
+                  CGFloat sh = sub.frame.size.height;
+                  if (sh <= 0 || sh > h * 0.8) continue;
+                  CGFloat top = CGRectGetMinY(sub.frame);
+                  CGFloat bottom = CGRectGetMaxY(sub.frame);
+                  if (top < minY) minY = top;
+                  if (bottom > maxY) maxY = bottom;
+              }
+              if (minY == CGFLOAT_MAX || maxY <= minY) return;
+              CGFloat shift = (h - (maxY - minY)) / 2.0 - minY;
+              if (shift > -0.5 && shift < 0.5) return;
+              for (UIView *sub in self.subviews) {
+                  if (sub.hidden) continue;
+                  CGFloat sh = sub.frame.size.height;
+                  if (sh <= 0 || sh > h * 0.8) continue;
+                  CGRect f = sub.frame;
+                  f.origin.y += shift;
+                  sub.frame = f;
+              }
+          }
+
           %end
 
           %hook CCUILabeledRoundButton
@@ -259,16 +288,6 @@ jobs:
               %orig;
               if (!fcEnabled) return;
               self.transform = CGAffineTransformMakeScale(fcScale, fcScale);
-          }
-
-          - (void)layoutSubviews {
-              %orig;
-              if (!fcEnabled) return;
-              for (UIView *sub in self.subviews) {
-                  CGRect f = sub.frame;
-                  f.origin.y += 3;
-                  sub.frame = f;
-              }
           }
 
           %end
