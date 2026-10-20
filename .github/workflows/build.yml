@@ -139,6 +139,7 @@ jobs:
           @interface CCUIMutableLayoutOptions : NSObject
           - (void)setItemEdgeSize:(CGFloat)edgeSize;
           - (void)setItemSpacing:(CGFloat)itemSpacing;
+          - (void)fc_recalculate;
           @end
 
           @interface CCUIControlCenterPositionProviderPackingRule : NSObject
@@ -195,7 +196,7 @@ jobs:
                   if (arg3.width < 10) arg3.width = fcColumns;
                   if (arg3.height < 10) arg3.height = 4;
               }
-              return %orig(arg1, arg2, arg3);
+              return %orig;
           }
 
           %end
@@ -212,7 +213,7 @@ jobs:
                   if (arg5.width < 10) arg5.width = fcColumns;
                   if (arg5.height < 10) arg5.height = 4;
               }
-              return %orig(identifiers, sizes, arg3, arg4, arg5, arg6);
+              return %orig;
           }
 
           %end
@@ -230,7 +231,7 @@ jobs:
 
           - (void)setContinuousSliderCornerRadius:(CGFloat)arg1 {
               if (fcEnabled) arg1 = fcCorner;
-              %orig(arg1);
+              %orig;
           }
 
           %end
@@ -273,6 +274,14 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set +e
+          MAIN_SHA="$(curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/git/ref/heads/main" \
+            | sed -n 's/.*"sha": *"\([0-9a-f]\{40\}\)".*/\1/p' | head -1)"
+          if [ -n "$MAIN_SHA" ]; then
+            curl -sS -X POST -H "Authorization: Bearer $GITHUB_TOKEN" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/git/refs" \
+              -d "{\"ref\":\"refs/heads/ci-log\",\"sha\":\"$MAIN_SHA\"}" >/dev/null 2>&1 || true
+          fi
           {
             echo "===== META ====="
             echo "run=$GITHUB_RUN_NUMBER sha=$GITHUB_SHA build_outcome=${{ steps.build.outcome }}"
