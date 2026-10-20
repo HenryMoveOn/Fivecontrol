@@ -89,7 +89,7 @@ jobs:
           cat > control <<'EOF_CONTROL'
           Package: com.henrymoveon.fivecontrol
           Name: Fivecontrol
-          Version: 1.0.5
+          Version: 1.0.6
           Architecture: iphoneos-arm64e
           Description: Five columns in Control Center, 80 percent module scale, 33pt corner radius.
           Maintainer: HenryMoveOn
@@ -253,31 +253,42 @@ jobs:
 
           - (void)layoutSubviews {
               %orig;
-              if (!fcEnabled || fcEdge <= 0) return;
+              if (!fcEnabled) return;
               UIView *parent = self.superview;
               if (!parent) return;
-              if (parent.bounds.size.width < fcEdge * 1.6) return;
-              if (parent.bounds.size.height < fcEdge * 1.6) return;
               Class btnCls = NSClassFromString(@"CCUIButtonModuleView");
               if (!btnCls) return;
-              CGFloat ph = parent.bounds.size.height;
+              NSMutableArray *btns = [NSMutableArray array];
+              for (UIView *sib in parent.subviews) {
+                  if ([sib isKindOfClass:btnCls]) [btns addObject:sib];
+              }
+              if (btns.count < 2) return;
               CGFloat minY = CGFLOAT_MAX;
               CGFloat maxY = -CGFLOAT_MAX;
-              for (UIView *sib in parent.subviews) {
-                  if (![sib isKindOfClass:btnCls]) continue;
-                  CGFloat top = CGRectGetMinY(sib.frame);
-                  CGFloat bottom = CGRectGetMaxY(sib.frame);
-                  if (top < minY) minY = top;
-                  if (bottom > maxY) maxY = bottom;
+              CGFloat minX = CGFLOAT_MAX;
+              CGFloat maxX = -CGFLOAT_MAX;
+              for (UIView *b in btns) {
+                  CGRect bf = b.frame;
+                  CGFloat t = CGRectGetMinY(bf);
+                  CGFloat bt = CGRectGetMaxY(bf);
+                  CGFloat l = CGRectGetMinX(bf);
+                  CGFloat r = CGRectGetMaxX(bf);
+                  if (t < minY) minY = t;
+                  if (bt > maxY) maxY = bt;
+                  if (l < minX) minX = l;
+                  if (r > maxX) maxX = r;
               }
               if (minY == CGFLOAT_MAX || maxY <= minY) return;
-              CGFloat shift = (ph - (maxY - minY)) / 2.0 - minY;
+              CGFloat bw = maxX - minX;
+              CGFloat bh = maxY - minY;
+              if (bw <= 0 || bh < bw * 0.7) return;
+              CGFloat ph = parent.bounds.size.height;
+              CGFloat shift = (ph - bh) / 2.0 - minY;
               if (shift > -0.5 && shift < 0.5) return;
-              for (UIView *sib in parent.subviews) {
-                  if (![sib isKindOfClass:btnCls]) continue;
-                  CGRect f = sib.frame;
+              for (UIView *b in btns) {
+                  CGRect f = b.frame;
                   f.origin.y += shift;
-                  sib.frame = f;
+                  b.frame = f;
               }
           }
 
