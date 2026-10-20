@@ -1,573 +1,331 @@
-name: Build CC5Columns
+name: Build Fivecontrol
 
 on:
   push:
+    branches: [ main ]
   workflow_dispatch:
 
-env:
-  HOMEBREW_NO_AUTO_UPDATE: "1"
-  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+permissions:
+  contents: write
 
 jobs:
   build:
-    runs-on: macos-14
-    timeout-minutes: 40
-
+    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: 写入 tweak 工程
+      - name: Install Theos (roothide)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p tweak
-          cat > tweak/Tweak.xm <<'TWEAK_EOF'
-          // CC5Columns — 控制中心竖向 5 列（iOS 15 / 16 / 17，rootless / RootHide）
-          //
-          // 原理（与 OhMyInsets 同源）：
-          //   1) CCUIControlCenterPositionProviderPackingRule：把一页的打包宽度 4 改成 5；
-          //   2) CCUIControlCenterPositionProvider 的 _generateRect...：把 maximumSize.width 也改成 5；
-          //   3) CCUIMutableLayoutOptions：保持 4 列时的总宽度不变，把格子(itemEdgeSize)与间距(itemSpacing)
-          //      重新均分成 5 份，让 5 个格子正好塞进原来的宽度。
-          //
-          // 为了避免「只改了列数、格子没缩小」导致控件互相重叠，这里做了联动保护：
-          //   只有第 3 步（尺寸压缩）确认可用时，才启用第 1、2 步。任何一步对不上，
-          //   整套都不生效，控制中心保持原样，不会出现错位。
-          //
-          // 所有私有类/方法都是运行时解析 + 类型编码校验后再安装，匹配不到只打日志，不崩溃。
-          // 首次运行请用 Console 过滤 "CC5Columns" 看诊断输出。
-
-          #import <Foundation/Foundation.h>
-          #import <UIKit/UIKit.h>
-          #import <objc/runtime.h>
-          #import <objc/message.h>
-          #import <dispatch/dispatch.h>
-          #import <math.h>
-          #import <string.h>
-          #import <stdlib.h>
-
-          #define CC5_LOG(fmt, ...) NSLog(@"[CC5Columns] " fmt, ##__VA_ARGS__)
-
-          static NSString *const kCC5PrefDomain   = @"com.cc5columns.tweak";
-          static const NSUInteger kCC5NativeCols   = 4;    // 系统原生列数
-          static const CGFloat    kCC5SpacingScale = 0.8;  // 间距缩放
-          static const CGFloat    kCC5IconScale    = 0.8;  // 按钮图标缩放
-
-          static BOOL       gCC5Enabled     = YES;
-          static NSUInteger gCC5Columns     = 5;
-          static BOOL       gCC5LayoutReady = NO;   // 尺寸压缩是否可用
-
-          #pragma mark - 偏好
-
-          static void CC5ReloadPrefs(void) {
-              CFStringRef domain = (__bridge CFStringRef)kCC5PrefDomain;
-              CFPreferencesAppSynchronize(domain);
-
-              Boolean exists = false;
-              Boolean enabled = CFPreferencesGetAppBooleanValue(CFSTR("enabled"), domain, &exists);
-              gCC5Enabled = exists ? (enabled ? YES : NO) : YES;
-
-              exists = false;
-              CFIndex cols = CFPreferencesGetAppIntegerValue(CFSTR("columns"), domain, &exists);
-              gCC5Columns = (exists && cols >= (CFIndex)kCC5NativeCols && cols <= 7) ? (NSUInteger)cols : 5;
-          }
-
-          #pragma mark - 通用工具
-
-          static BOOL CC5HookMethod(Class cls, SEL sel, IMP newImp, IMP *outOrig) {
-              if (!cls || !sel || !newImp) return NO;
-              Method m = class_getInstanceMethod(cls, sel);
-              if (!m) return NO;
-              if (outOrig) *outOrig = method_getImplementation(m);
-
-              const char *types = method_getTypeEncoding(m);
-              if (class_addMethod(cls, sel, newImp, types)) return YES;   // 类自身没实现，补一个
-
-              Method own = class_getInstanceMethod(cls, sel);
-              if (own) method_setImplementation(own, newImp);
-              return YES;
-          }
-
-          // 校验方法签名，避免私有方法参数变了还硬挂钩子导致 ABI 不符崩溃
-          static BOOL CC5CheckSignature(Method m, NSUInteger argCount, const char *lastArgType) {
-              if (!m) return NO;
-              if (method_getNumberOfArguments(m) != (unsigned int)argCount) return NO;
-              if (lastArgType) {
-                  char buf[16] = {0};
-                  method_getArgumentType(m, (unsigned int)(argCount - 1), buf, sizeof(buf));
-                  if (buf[0] != lastArgType[0]) return NO;
-              }
-              char ret[16] = {0};
-              method_getReturnType(m, ret, sizeof(ret));
-              if (ret[0] != 'v' && ret[0] != '@') return NO;
-              return YES;
-          }
-
-          static BOOL CC5ReadNumber(id obj, const char *ivarName, NSString *key, CGFloat *out) {
-              if (!obj || !out) return NO;
-
-              Ivar iv = class_getInstanceVariable(object_getClass(obj), ivarName);
-              if (iv) {
-                  const char *enc = ivar_getTypeEncoding(iv);
-                  void *addr = (char *)(__bridge void *)obj + ivar_getOffset(iv);
-                  if (enc && enc[0] == 'd') { double v = 0; memcpy(&v, addr, sizeof(v)); *out = (CGFloat)v; return YES; }
-                  if (enc && enc[0] == 'f') { float  v = 0; memcpy(&v, addr, sizeof(v)); *out = (CGFloat)v; return YES; }
-              }
-
-              // 兜底：KVC（ivar 改名但属性还在时仍可用）
-              @try {
-                  NSNumber *n = [obj valueForKey:key];
-                  if ([n isKindOfClass:[NSNumber class]]) { *out = (CGFloat)[n doubleValue]; return YES; }
-              } @catch (__unused NSException *e) {}
-              return NO;
-          }
-
-          static BOOL CC5WriteNumber(id obj, const char *ivarName, NSString *key, CGFloat value) {
-              if (!obj) return NO;
-
-              Ivar iv = class_getInstanceVariable(object_getClass(obj), ivarName);
-              if (iv) {
-                  const char *enc = ivar_getTypeEncoding(iv);
-                  void *addr = (char *)(__bridge void *)obj + ivar_getOffset(iv);
-                  if (enc && enc[0] == 'd') { double v = (double)value; memcpy(addr, &v, sizeof(v)); return YES; }
-                  if (enc && enc[0] == 'f') { float  v = (float)value;  memcpy(addr, &v, sizeof(v)); return YES; }
-              }
-
-              @try {
-                  [obj setValue:@(value) forKey:key];
-                  return YES;
-              } @catch (__unused NSException *e) {}
-              return NO;
-          }
-
-          #pragma mark - 格子尺寸重算（核心）
-
-          static const void *kCC5OriginalsKey   = &kCC5OriginalsKey;
-          static const void *kCC5LastAppliedKey = &kCC5LastAppliedKey;
-
-          static BOOL CC5ApplyLayoutOptions(id opts) {
-              if (!gCC5Enabled || gCC5Columns <= kCC5NativeCols) return NO;
-
-              static BOOL applying = NO;      // KVC 兜底会回调 setter，防止递归
-              if (applying) return NO;
-              applying = YES;
-              BOOL result = NO;
-
-              do {
-                  CGFloat edge = 0, spacing = 0;
-                  if (!CC5ReadNumber(opts, "_itemEdgeSize", @"itemEdgeSize", &edge)) break;
-                  if (!CC5ReadNumber(opts, "_itemSpacing",  @"itemSpacing",  &spacing)) spacing = 0;
-                  if (edge <= 0) break;
-
-                  NSValue *lastVal = objc_getAssociatedObject(opts, kCC5LastAppliedKey);
-                  NSValue *origVal = objc_getAssociatedObject(opts, kCC5OriginalsKey);
-                  CGPoint  last    = lastVal ? lastVal.CGPointValue : CGPointMake(-1, -1);
-
-                  // 当前值若还是上次我们写进去的，沿用最初记录的系统值；否则认为系统重新下发了原始值。
-                  if (!origVal || (last.x >= 0 && fabs(edge - last.x) > 0.5)) {
-                      origVal = [NSValue valueWithCGPoint:CGPointMake(edge, spacing)];
-                      objc_setAssociatedObject(opts, kCC5OriginalsKey, origVal, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                  }
-
-                  CGPoint orig = origVal.CGPointValue;
-                  if (orig.x <= 0) break;
-
-                  CGFloat totalWidth = orig.x * (CGFloat)kCC5NativeCols + orig.y * (CGFloat)(kCC5NativeCols - 1);
-                  CGFloat newSpacing = orig.y * kCC5SpacingScale;
-                  CGFloat newEdge    = (totalWidth - newSpacing * (CGFloat)(gCC5Columns - 1)) / (CGFloat)gCC5Columns;
-                  if (newEdge <= 0) break;
-
-                  if (!CC5WriteNumber(opts, "_itemEdgeSize", @"itemEdgeSize", newEdge)) break;
-                  CC5WriteNumber(opts, "_itemSpacing", @"itemSpacing", newSpacing);
-
-                  objc_setAssociatedObject(opts, kCC5LastAppliedKey,
-                                           [NSValue valueWithCGPoint:CGPointMake(newEdge, newSpacing)],
-                                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                  result = YES;
-              } while (0);
-
-              applying = NO;
-              return result;
-          }
-
-          #pragma mark - 布局尺寸钩子
-
-          typedef void (*CC5RecalcFn)(id, SEL);
-          static CC5RecalcFn gOrigRecalc = NULL;
-
-          static void CC5RecalcHook(id self, SEL _cmd) {
-              CC5ApplyLayoutOptions(self);                // 先压成 5 列，让系统按新尺寸算
-              if (gOrigRecalc) gOrigRecalc(self, _cmd);   // 原逻辑
-              CC5ApplyLayoutOptions(self);                // 若原逻辑把尺寸算回去了，再压一次
-          }
-
-          typedef struct { SEL sel; IMP orig; } CC5SetterEntry;
-          static CC5SetterEntry gSetters[4];
-          static int gSetterCount = 0;
-
-          static void CC5SetterHook(id self, SEL _cmd, CGFloat value) {
-              for (int i = 0; i < gSetterCount; i++) {
-                  if (sel_isEqual(gSetters[i].sel, _cmd) && gSetters[i].orig) {
-                      ((void (*)(id, SEL, CGFloat))gSetters[i].orig)(self, _cmd, value);
-                      break;
-                  }
-              }
-              CC5ApplyLayoutOptions(self);
-          }
-
-          static void CC5InstallLayoutHooks(void) {
-              static BOOL installed = NO;
-              if (installed) return;
-
-              Class cls = NSClassFromString(@"CCUIMutableLayoutOptions");
-              if (!cls) return;
-              installed = YES;
-
-              // 先确认尺寸字段存在，否则改了列数却没缩小格子会造成重叠
-              Ivar edgeIvar = class_getInstanceVariable(cls, "_itemEdgeSize");
-              gCC5LayoutReady = (edgeIvar != NULL)
-                             || [cls instancesRespondToSelector:NSSelectorFromString(@"itemEdgeSize")];
-
-              IMP orig = NULL;
-              Method recalcM = class_getInstanceMethod(cls, NSSelectorFromString(@"recalculateItemLayouts"));
-              if (recalcM && CC5CheckSignature(recalcM, 2, NULL)
-                  && CC5HookMethod(cls, NSSelectorFromString(@"recalculateItemLayouts"), (IMP)CC5RecalcHook, &orig)) {
-                  gOrigRecalc = (CC5RecalcFn)orig;
-                  CC5_LOG(@"钩子: recalculateItemLayouts");
-              } else {
-                  CC5_LOG(@"未找到 recalculateItemLayouts，改用 setter 路径");
-              }
-
-              for (NSString *name in @[@"setItemEdgeSize:", @"setItemSpacing:"]) {
-                  if (gSetterCount >= (int)(sizeof(gSetters) / sizeof(gSetters[0]))) break;
-                  SEL sel = NSSelectorFromString(name);
-                  Method sm = class_getInstanceMethod(cls, sel);
-                  if (!sm || !CC5CheckSignature(sm, 3, "d")) continue;
-                  IMP o = NULL;
-                  if (!CC5HookMethod(cls, sel, (IMP)CC5SetterHook, &o)) continue;
-                  gSetters[gSetterCount].sel  = sel;
-                  gSetters[gSetterCount].orig = o;
-                  gSetterCount++;
-                  CC5_LOG(@"钩子: %@", name);
-              }
-
-              CC5_LOG(@"尺寸改写可用: %@", gCC5LayoutReady ? @"是" : @"否（将保持 4 列）");
-          }
-
-          #pragma mark - 打包规则：4 列 -> 5 列
-
-          typedef struct { unsigned long long width, height; } CC5SizeULL;
-          typedef struct { double width, height; }             CC5SizeDbl;
-
-          typedef id (*CC5PackInitULL)(id, SEL, unsigned long long, unsigned long long, CC5SizeULL);
-          typedef id (*CC5PackInitDbl)(id, SEL, unsigned long long, unsigned long long, CC5SizeDbl);
-
-          static CC5PackInitULL gOrigPackULL = NULL;
-          static CC5PackInitDbl gOrigPackDbl = NULL;
-
-          static id CC5PackULLHook(id self, SEL _cmd, unsigned long long a, unsigned long long b, CC5SizeULL s) {
-              if (gCC5Enabled && gCC5LayoutReady && s.width > 0 && s.width < 10) {
-                  s.width = (unsigned long long)gCC5Columns;
-              }
-              return gOrigPackULL(self, _cmd, a, b, s);
-          }
-
-          static id CC5PackDblHook(id self, SEL _cmd, unsigned long long a, unsigned long long b, CC5SizeDbl s) {
-              if (gCC5Enabled && gCC5LayoutReady && s.width > 0.0 && s.width < 10.0) {
-                  s.width = (double)gCC5Columns;
-              }
-              return gOrigPackDbl(self, _cmd, a, b, s);
-          }
-
-          static void CC5InstallPackingRuleHook(void) {
-              static BOOL installed = NO;
-              if (installed) return;
-
-              Class cls = NSClassFromString(@"CCUIControlCenterPositionProviderPackingRule");
-              if (!cls) {
-                  CC5_LOG(@"缺少 CCUIControlCenterPositionProviderPackingRule");
-                  return;
-              }
-
-              Method m = class_getInstanceMethod(cls, NSSelectorFromString(@"initWithPackFrom:packingOrder:sizeLimit:"));
-              if (!m) {
-                  CC5_LOG(@"PackingRule 无 initWithPackFrom:packingOrder:sizeLimit:");
-                  installed = YES;
-                  return;
-              }
-
-              const char *types = method_getTypeEncoding(m);
-              IMP orig = method_getImplementation(m);
-              if (!CC5CheckSignature(m, 5, NULL)) {
-                  CC5_LOG(@"PackingRule 方法签名不符: %s", types ?: "(null)");
-              } else if (types && strstr(types, "=QQ}")) {
-                  gOrigPackULL = (CC5PackInitULL)orig;
-                  method_setImplementation(m, (IMP)CC5PackULLHook);
-                  CC5_LOG(@"钩子: PackingRule（整型 sizeLimit）");
-              } else if (types && strstr(types, "=dd}")) {
-                  gOrigPackDbl = (CC5PackInitDbl)orig;
-                  method_setImplementation(m, (IMP)CC5PackDblHook);
-                  CC5_LOG(@"钩子: PackingRule（浮点 sizeLimit）");
-              } else {
-                  CC5_LOG(@"PackingRule sizeLimit 结构未知: %s", types ?: "(null)");
-              }
-              installed = YES;
-          }
-
-          #pragma mark - PositionProvider：maximumSize 也要 5
-
-          typedef struct { unsigned long long x, y; } CC5PointULL;
-          typedef id (*CC5GenRectFn)(id, SEL, id, id, unsigned long long, CC5PointULL, CC5SizeULL, CC5SizeULL *);
-
-          static CC5GenRectFn gOrigGenRect = NULL;
-
-          static id CC5GenRectHook(id self, SEL _cmd, id identifiers, id sizes,
-                                   unsigned long long packingOrder, CC5PointULL startPos,
-                                   CC5SizeULL maxSize, CC5SizeULL *outSize) {
-              if (gCC5Enabled && gCC5LayoutReady && maxSize.width > 0 && maxSize.width < 10) {
-                  maxSize.width = (unsigned long long)gCC5Columns;
-              }
-              return gOrigGenRect(self, _cmd, identifiers, sizes, packingOrder, startPos, maxSize, outSize);
-          }
-
-          static void CC5InstallPositionProviderHook(void) {
-              static BOOL installed = NO;
-              if (installed) return;
-
-              Class cls = NSClassFromString(@"CCUIControlCenterPositionProvider");
-              if (!cls) {
-                  CC5_LOG(@"缺少 CCUIControlCenterPositionProvider");
-                  return;
-              }
-
-              Method m = class_getInstanceMethod(cls,
-                  NSSelectorFromString(@"_generateRectByIdentifierWithOrderedIdentifiers:orderedSizes:packingOrder:startPosition:maximumSize:outputLayoutSize:"));
-              if (!m) {
-                  CC5_LOG(@"PositionProvider 无已知打包方法");
-                  installed = YES;
-                  return;
-              }
-
-              const char *types = method_getTypeEncoding(m);
-              if (!types || !strstr(types, "=QQ}") || !CC5CheckSignature(m, 8, NULL)) {
-                  CC5_LOG(@"PositionProvider 类型编码不符: %s", types ?: "(null)");
-                  installed = YES;
-                  return;
-              }
-
-              gOrigGenRect = (CC5GenRectFn)method_getImplementation(m);
-              method_setImplementation(m, (IMP)CC5GenRectHook);
-              CC5_LOG(@"钩子: PositionProvider");
-              installed = YES;
-          }
-
-          #pragma mark - 图标缩放
-
-          static void CC5InstallIconScaling(void) {
-              static BOOL installed = NO;
-              if (installed) return;
-
-              Class cls = NSClassFromString(@"CCUIButtonModuleView");
-              if (!cls) return;
-              installed = YES;
-
-              Method m = class_getInstanceMethod(cls, @selector(didMoveToWindow));
-              if (!m) return;
-
-              IMP orig = method_getImplementation(m);
-              IMP hook = imp_implementationWithBlock(^(id view) {
-                  ((void (*)(id, SEL))orig)(view, @selector(didMoveToWindow));
-                  if (!gCC5Enabled || !gCC5LayoutReady || gCC5Columns <= kCC5NativeCols) return;
-                  for (UIView *sub in [(UIView *)view subviews]) {
-                      NSString *clsName = NSStringFromClass([sub class]);
-                      if ([clsName containsString:@"CAPackage"] || [clsName containsString:@"Glyph"]) {
-                          sub.transform = CGAffineTransformMakeScale(kCC5IconScale, kCC5IconScale);
-                      }
-                  }
-              });
-              method_setImplementation(m, hook);
-              CC5_LOG(@"钩子: 按钮图标缩放");
-          }
-
-          #pragma mark - 诊断
-
-          static void CC5DumpDiagnostics(void) {
-              Class pack = NSClassFromString(@"CCUIControlCenterPositionProviderPackingRule");
-              Class opts = NSClassFromString(@"CCUIMutableLayoutOptions");
-              Class prov = NSClassFromString(@"CCUIControlCenterPositionProvider");
-
-              CC5_LOG(@"诊断: PackingRule=%@ LayoutOptions=%@ PositionProvider=%@",
-                      pack ? @"有" : @"无", opts ? @"有" : @"无", prov ? @"有" : @"无");
-
-              if (pack) {
-                  unsigned int count = 0;
-                  Method *list = class_copyMethodList(pack, &count);
-                  for (unsigned int i = 0; i < count; i++) {
-                      const char *name = sel_getName(method_getName(list[i]));
-                      if (strncmp(name, "init", 4) == 0) {
-                          CC5_LOG(@"  PackingRule %s %s", name, method_getTypeEncoding(list[i]) ?: "");
-                      }
-                  }
-                  free(list);
-              }
-
-              if (opts) {
-                  unsigned int count = 0;
-                  Ivar *ivars = class_copyIvarList(opts, &count);
-                  for (unsigned int i = 0; i < count; i++) {
-                      CC5_LOG(@"  LayoutOptions ivar %s (%s)", ivar_getName(ivars[i]), ivar_getTypeEncoding(ivars[i]) ?: "");
-                  }
-                  free(ivars);
-              }
-          }
-
-          #pragma mark - 安装驱动
-
-          static void CC5InstallAll(void) {
-              CC5InstallLayoutHooks();
-              CC5InstallPackingRuleHook();
-              CC5InstallPositionProviderHook();
-              CC5InstallIconScaling();
-          }
-
-          static BOOL CC5ClassesReady(void) {
-              return NSClassFromString(@"CCUIMutableLayoutOptions") != nil
-                  && NSClassFromString(@"CCUIControlCenterPositionProviderPackingRule") != nil;
-          }
-
-          static void CC5PollAndInstall(int remaining) {
-              CC5InstallAll();
-              if (CC5ClassesReady() || remaining <= 0) {
-                  static BOOL dumped = NO;
-                  if (!dumped) { dumped = YES; CC5DumpDiagnostics(); }
-                  return;
-              }
-              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                             dispatch_get_main_queue(), ^{ CC5PollAndInstall(remaining - 1); });
-          }
-
-          %ctor {
-              @autoreleasepool {
-                  // 只在自己关心的进程里工作（老系统是 SpringBoard；部分版本 CC 独立进程）
-                  NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
-                  BOOL isCCProcess = [bundleID isEqualToString:@"com.apple.springboard"]
-                                  || [bundleID containsString:@"ControlCenter"];
-                  if (!isCCProcess) return;
-
-                  CC5ReloadPrefs();
-                  CC5InstallAll();
-
-                  // ControlCenterUI 可能在第一次下拉时才加载
-                  [[NSNotificationCenter defaultCenter] addObserverForName:NSBundleDidLoadNotification
-                                                                    object:nil
-                                                                     queue:[NSOperationQueue mainQueue]
-                                                                usingBlock:^(__unused NSNotification *note) {
-                      CC5InstallAll();
-                  }];
-                  CC5PollAndInstall(60);
-              }
-          }
-          TWEAK_EOF
-          cat > tweak/Makefile <<'MAKE_EOF'
-          TARGET := iphone:clang:16.5:15.0
-          ARCHS := arm64 arm64e
-
-          INSTALL_TARGET_PROCESSES := SpringBoard
+          set +e
+          LOG="$GITHUB_WORKSPACE/install.log"
+          : > "$LOG"
+          echo "### attempt: install-theos (authenticated)" >> "$LOG"
+          bash -c "$(curl -fsSL https://raw.githubusercontent.com/roothide/theos/master/bin/install-theos)" >> "$LOG" 2>&1
+          rc=$?
+          echo "install-theos rc=$rc" >> "$LOG"
+          if [ "$rc" -ne 0 ] || [ -z "$(ls -d "$HOME/theos/sdks"/iPhoneOS*.sdk 2>/dev/null)" ]; then
+            echo "### fallback: manual setup" >> "$LOG"
+            brew install ldid xz >> "$LOG" 2>&1
+            [ -d "$HOME/theos" ] || git clone --recursive --depth 1 https://github.com/roothide/theos.git "$HOME/theos" >> "$LOG" 2>&1
+            rm -rf "$HOME/theos/sdks"
+            mkdir -p "$HOME/theos/sdks"
+            "$HOME/theos/bin/install-sdk" latest >> "$LOG" 2>&1
+          fi
+          if [ ! -d "$HOME/theos/sdks/iPhoneOS16.5.sdk" ]; then
+            echo "### ensure iPhoneOS16.5 sdk explicitly" >> "$LOG"
+            "$HOME/theos/bin/install-sdk" iPhoneOS16.5 >> "$LOG" 2>&1 || true
+          fi
+          echo "=== sdks ===" >> "$LOG"
+          ls -la "$HOME/theos/sdks" >> "$LOG" 2>&1
+          echo "=== toolchain ===" >> "$LOG"
+          ls "$HOME/theos/toolchain" >> "$LOG" 2>&1
+          SDK_DIR="$(ls -d "$HOME/theos/sdks"/iPhoneOS*.sdk 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$SDK_DIR" ]; then
+            echo "INSTALL FAILED: no iPhoneOS sdk" >> "$LOG"
+            exit 1
+          fi
+          SDK_VER="$(basename "$SDK_DIR" .sdk)"
+          SDK_VER="${SDK_VER#iPhoneOS}"
+          echo "using SDK: $SDK_VER" >> "$LOG"
+          echo "SDKTARGET=iphone:clang:$SDK_VER:15.0" >> "$GITHUB_ENV"
+          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+          echo "$HOME/theos/bin" >> "$GITHUB_PATH"
+
+      - name: Ensure GNU make
+        run: |
+          MAKE_BIN="$(brew --prefix)/opt/make/bin/gmake"
+          if [ ! -x "$MAKE_BIN" ]; then
+            brew install make 2>&1 | tee "$GITHUB_WORKSPACE/brew-make.log" || true
+          fi
+          if [ -x "$MAKE_BIN" ]; then
+            "$MAKE_BIN" --version 2>/dev/null | head -1 | tee "$GITHUB_WORKSPACE/make-version.txt" || true
+          else
+            echo "GMAKE MISSING - will fall back to system make" | tee "$GITHUB_WORKSPACE/make-version.txt" || true
+          fi
+
+      - name: Generate tweak project
+        run: |
+          mkdir -p Fivecontrol
+          cd Fivecontrol
+          cat > Makefile <<'EOF_MAKEFILE'
+          SDKTARGET ?= iphone:clang:16.5:15.0
+          TARGET := $(SDKTARGET)
+          ARCHS = arm64e
+          THEOS_PACKAGE_SCHEME = roothide
+          INSTALL_TARGET_PROCESSES = SpringBoard
 
           include $(THEOS)/makefiles/common.mk
 
-          TWEAK_NAME := CC5Columns
-
-          CC5Columns_FILES := Tweak.xm
-          CC5Columns_CFLAGS := -fobjc-arc -Wno-unused-function -Wno-deprecated-declarations -Wno-error
-          CC5Columns_FRAMEWORKS := UIKit Foundation
+          TWEAK_NAME = Fivecontrol
+          Fivecontrol_FILES = Tweak.xm
+          Fivecontrol_CFLAGS = -fobjc-arc -Wno-error
+          Fivecontrol_FRAMEWORKS = UIKit
 
           include $(THEOS_MAKE_PATH)/tweak.mk
-          MAKE_EOF
-          cat > tweak/control <<'CTRL_EOF'
-          Package: com.cc5columns.tweak
-          Name: CC5Columns
+          EOF_MAKEFILE
+          cat > control <<'EOF_CONTROL'
+          Package: com.henrymoveon.fivecontrol
+          Name: Fivecontrol
           Version: 1.0.0
-          Architecture: iphoneos-arm
-          Description: 控制中心竖向 5 列布局（iOS 15/16/17，rootless / RootHide）
-          Maintainer: you
-          Author: you
+          Architecture: iphoneos-arm64e
+          Description: Five columns in Control Center, 80 percent module scale, 33pt corner radius.
+          Maintainer: HenryMoveOn
+          Author: HenryMoveOn
           Section: Tweaks
-          Depends: mobilesubstrate (>= 0.9.5000), firmware (>= 15.0)
-          CTRL_EOF
-          cat > tweak/CC5Columns.plist <<'PLIST_EOF'
-          { Filter = { Bundles = ( "com.apple.springboard", "com.apple.ControlCenter" ); }; }
-          PLIST_EOF
-          ls -l tweak
+          Depends: mobilesubstrate, firmware (>= 17.0)
+          EOF_CONTROL
+          cat > Fivecontrol.plist <<'EOF_FILTER'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>Filter</key>
+              <dict>
+                  <key>Bundles</key>
+                  <array>
+                      <string>com.apple.springboard</string>
+                  </array>
+              </dict>
+          </dict>
+          </plist>
+          EOF_FILTER
+          cat > Tweak.xm <<'EOF_TWEAK'
+          #import <UIKit/UIKit.h>
+          #import <objc/runtime.h>
 
-      - name: 安装依赖
-        run: |
-          brew install ldid xz dpkg
-          ldid -v 2>&1 | head -1 || true
-          dpkg-deb --version | head -1
-          xz --version | head -1
+          typedef struct { unsigned long long width; unsigned long long height; } FC_LayoutSize;
+          typedef struct { unsigned long long x; unsigned long long y; } FC_LayoutPoint;
 
-      - name: 安装 Theos 与 iOS SDK
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git clone --recursive --depth 1 https://github.com/theos/theos.git "$HOME/theos"
-          export THEOS="$HOME/theos"
-          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
-          echo "$THEOS/bin" >> "$GITHUB_PATH"
+          static BOOL fcEnabled = YES;
+          static NSUInteger fcColumns = 5;
+          static CGFloat fcScale = 0.8;
+          static CGFloat fcCorner = 33.0;
 
-          "$THEOS/bin/install-sdk" iPhoneOS16.5 || {
-            echo "::warning::install-sdk 失败，改用直链下载"
-            curl -L --retry 5 --max-time 900 -o /tmp/sdk.tar.xz \
-              "https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz"
-            mkdir -p "$THEOS/sdks"
-            tar -xJf /tmp/sdk.tar.xz -C "$THEOS/sdks"
-          }
-          ls "$THEOS/sdks"
-
-      - name: 编译 rootless
-        run: |
-          export THEOS="$HOME/theos"
-          cd tweak
-          make clean || true
-          make package THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1
-          ls -l packages/ || true
-
-      - name: 上传 rootless deb
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: CC5Columns-rootless
-          path: tweak/packages/*.deb
-          if-no-files-found: warn
-
-      - name: 安装 roothide Theos（Relaxin 用）
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git clone --recursive --depth 1 https://github.com/roothide/theos.git "$HOME/theos-roothide"
-          export THEOS="$HOME/theos-roothide"
-          echo "THEOS_ROOTHIDE=$THEOS" >> "$GITHUB_ENV"
-          "$THEOS/bin/install-sdk" iPhoneOS16.5 || {
-            mkdir -p "$THEOS/sdks"
-            curl -L --retry 5 --max-time 900 -o /tmp/sdk2.tar.xz \
-              "https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz"
-            tar -xJf /tmp/sdk2.tar.xz -C "$THEOS/sdks"
+          static inline CGFloat fc_getIvar(id obj, const char *name) {
+              Ivar iv = class_getInstanceVariable([obj class], name);
+              if (!iv) return 0;
+              return *(CGFloat *)((char *)(__bridge void *)obj + ivar_getOffset(iv));
           }
 
-      - name: 编译 roothide
+          static inline void fc_setIvar(id obj, const char *name, CGFloat v) {
+              Ivar iv = class_getInstanceVariable([obj class], name);
+              if (!iv) return;
+              *(CGFloat *)((char *)(__bridge void *)obj + ivar_getOffset(iv)) = v;
+          }
+
+          @interface CCUIMutableLayoutOptions : NSObject
+          - (void)setItemEdgeSize:(CGFloat)edgeSize;
+          - (void)setItemSpacing:(CGFloat)itemSpacing;
+          @end
+
+          @interface CCUIControlCenterPositionProviderPackingRule : NSObject
+          - (id)initWithPackFrom:(unsigned long long)arg1 packingOrder:(unsigned long long)arg2 sizeLimit:(FC_LayoutSize)arg3;
+          @end
+
+          @interface CCUIControlCenterPositionProvider : NSObject
+          - (id)_generateRectByIdentifierWithOrderedIdentifiers:(NSArray *)identifiers orderedSizes:(NSArray *)sizes packingOrder:(unsigned long long)arg3 startPosition:(FC_LayoutPoint)arg4 maximumSize:(FC_LayoutSize)arg5 outputLayoutSize:(FC_LayoutSize *)arg6;
+          @end
+
+          @interface CCUIContentModuleContainerViewController : UIViewController
+          - (CGFloat)_continuousCornerRadiusForCompactState;
+          @end
+
+          @interface CCUIContinuousSliderView : UIView
+          - (void)setContinuousSliderCornerRadius:(CGFloat)arg1;
+          @end
+
+          %group Fivecontrol
+
+          %hook CCUIMutableLayoutOptions
+
+          - (void)setItemEdgeSize:(CGFloat)edgeSize {
+              %orig;
+              [self fc_recalculate];
+          }
+
+          - (void)setItemSpacing:(CGFloat)itemSpacing {
+              %orig;
+              [self fc_recalculate];
+          }
+
+          %new
+          - (void)fc_recalculate {
+              if (!fcEnabled || fcColumns < 5) return;
+              CGFloat edgeSize = fc_getIvar(self, "_itemEdgeSize");
+              CGFloat itemSpacing = fc_getIvar(self, "_itemSpacing");
+              if (edgeSize <= 0 || itemSpacing <= 0) return;
+              CGFloat totalWidth = edgeSize * 4 + itemSpacing * 3;
+              CGFloat newSpacing = itemSpacing * fcScale;
+              CGFloat newEdge = (totalWidth - newSpacing * 4) / (CGFloat)fcColumns;
+              if (newEdge > 0) {
+                  fc_setIvar(self, "_itemEdgeSize", newEdge);
+                  fc_setIvar(self, "_itemSpacing", newSpacing);
+              }
+          }
+
+          %end
+
+          %hook CCUIControlCenterPositionProviderPackingRule
+
+          - (id)initWithPackFrom:(unsigned long long)arg1 packingOrder:(unsigned long long)arg2 sizeLimit:(FC_LayoutSize)arg3 {
+              if (fcEnabled) {
+                  if (arg3.width < 10) arg3.width = fcColumns;
+                  if (arg3.height < 10) arg3.height = 4;
+              }
+              return %orig(arg1, arg2, arg3);
+          }
+
+          %end
+
+          %hook CCUIControlCenterPositionProvider
+
+          - (id)_generateRectByIdentifierWithOrderedIdentifiers:(NSArray *)identifiers
+                                                    orderedSizes:(NSArray *)sizes
+                                                    packingOrder:(unsigned long long)arg3
+                                                   startPosition:(FC_LayoutPoint)arg4
+                                                     maximumSize:(FC_LayoutSize)arg5
+                                                outputLayoutSize:(FC_LayoutSize *)arg6 {
+              if (fcEnabled) {
+                  if (arg5.width < 10) arg5.width = fcColumns;
+                  if (arg5.height < 10) arg5.height = 4;
+              }
+              return %orig(identifiers, sizes, arg3, arg4, arg5, arg6);
+          }
+
+          %end
+
+          %hook CCUIContentModuleContainerViewController
+
+          - (CGFloat)_continuousCornerRadiusForCompactState {
+              if (fcEnabled) return fcCorner;
+              return %orig;
+          }
+
+          %end
+
+          %hook CCUIContinuousSliderView
+
+          - (void)setContinuousSliderCornerRadius:(CGFloat)arg1 {
+              if (fcEnabled) arg1 = fcCorner;
+              %orig(arg1);
+          }
+
+          %end
+
+          %end
+
+          %ctor {
+              if (!objc_getClass("CCUIMutableLayoutOptions")) {
+                  NSLog(@"[Fivecontrol] CCUIMutableLayoutOptions not found - layout hook may be skipped");
+              }
+              %init(Fivecontrol);
+          }
+          EOF_TWEAK
+
+      - name: Build deb
+        id: build
         continue-on-error: true
         run: |
-          export THEOS="$HOME/theos-roothide"
-          export PATH="$THEOS/bin:$PATH"
-          cd tweak
-          rm -rf .theos packages
-          make package THEOS_PACKAGE_SCHEME=roothide FINALPACKAGE=1
-          ls -l packages/ || true
+          set -o pipefail
+          MAKE_BIN="$(brew --prefix)/opt/make/bin/gmake"
+          if [ ! -x "$MAKE_BIN" ]; then
+            echo "!!! gmake missing at build time" | tee build.log
+            MAKE_BIN="make"
+          fi
+          {
+            echo "===== DIAG ====="
+            echo "SDKTARGET=${SDKTARGET:-unset}"
+            echo "make: $("$MAKE_BIN" --version 2>/dev/null | head -1)"
+            ls -d "$THEOS/sdks"/iPhoneOS*.sdk 2>/dev/null || true
+            clang --version 2>&1 | head -2 || true
+            echo "===== MAKE ====="
+          } 2>&1 | tee -a build.log
+          cd Fivecontrol
+          "$MAKE_BIN" package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide 2>&1 | tee -a ../build.log
 
-      - name: 上传 roothide deb
+      - name: Save build log to ci-log branch
         if: always()
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          {
+            echo "===== META ====="
+            echo "run=$GITHUB_RUN_NUMBER sha=$GITHUB_SHA build_outcome=${{ steps.build.outcome }}"
+            echo
+            echo "===== MAKE VERSION ====="
+            cat make-version.txt 2>/dev/null
+            echo
+            echo "===== DEB PRODUCED? ====="
+            ls -la Fivecontrol/packages/ 2>/dev/null || true
+            echo
+            echo "===== DEB CONTENTS ====="
+            for d in Fivecontrol/packages/*.deb; do
+              [ -e "$d" ] && { echo ">> $d"; dpkg-deb -c "$d" 2>/dev/null | sed 's#^#  #'; } || true
+            done
+            echo
+            echo "===== INSTALL LOG TAIL (60) ====="
+            tail -n 60 install.log 2>/dev/null || true
+            echo
+            echo "===== BUILD LOG (last 150 lines) ====="
+            tail -n 150 build.log 2>/dev/null || true
+          } > build-log.txt
+          wc -c build-log.txt
+          B64="$(base64 < build-log.txt | tr -d '\n')"
+          SHA="$(curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/contents/build-log.txt?ref=ci-log" \
+            | grep '"sha"' | head -1 | sed -E 's/.*"sha": *"([^"]+)".*/\1/')"
+          if [ -n "$SHA" ]; then
+            PAYLOAD="{\"message\":\"ci log [skip ci]\",\"content\":\"$B64\",\"branch\":\"ci-log\",\"sha\":\"$SHA\"}"
+          else
+            PAYLOAD="{\"message\":\"ci log [skip ci]\",\"content\":\"$B64\",\"branch\":\"ci-log\"}"
+          fi
+          curl -sS -X PUT \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/contents/build-log.txt" \
+            -d "$PAYLOAD" | head -c 500 || true
+
+      - name: Upload deb
+        if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: CC5Columns-roothide
-          path: tweak/packages/*.deb
-          if-no-files-found: warn
+          name: Fivecontrol-deb
+          path: Fivecontrol/packages/*.deb
+
+      - name: Publish release
+        if: steps.build.outcome == 'success'
+        uses: softprops/action-gh-release@v2
+        continue-on-error: true
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Fivecontrol build ${{ github.run_number }}
+          files: Fivecontrol/packages/*.deb
+
+      - name: Fail if build failed
+        if: steps.build.outcome == 'failure'
+        run: exit 1
