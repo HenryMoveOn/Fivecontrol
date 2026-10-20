@@ -123,7 +123,8 @@ jobs:
           static NSUInteger fcColumns = 5;
           static CGFloat fcScale = 0.8;
           static CGFloat fcCorner = 33.0;
-          static CGFloat fcPadding = -1;
+          static CGFloat fcEdge = 0;
+          static CGFloat fcSpacing = 0;
 
           static inline CGFloat fc_getIvar(id obj, const char *name) {
               Ivar iv = class_getInstanceVariable([obj class], name);
@@ -176,13 +177,11 @@ jobs:
               CGFloat itemSpacing = fc_getIvar(self, "_itemSpacing");
               if (edgeSize <= 0 || itemSpacing <= 0) return;
               CGFloat totalWidth = edgeSize * 4 + itemSpacing * 3;
-              CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
-              if (screenW > totalWidth) {
-                  fcPadding = (screenW - totalWidth) / 2.0;
-              }
               CGFloat newSpacing = itemSpacing * fcScale;
               CGFloat newEdge = (totalWidth - newSpacing * 4) / (CGFloat)fcColumns;
               if (newEdge > 0) {
+                  fcEdge = newEdge;
+                  fcSpacing = newSpacing;
                   fc_setIvar(self, "_itemEdgeSize", newEdge);
                   fc_setIvar(self, "_itemSpacing", newSpacing);
               }
@@ -229,13 +228,27 @@ jobs:
 
           - (void)viewDidLayoutSubviews {
               %orig;
-              if (!fcEnabled || fcPadding <= 0) return;
-              CGRect f = self.view.frame;
-              if (f.origin.x < fcPadding - 0.5) {
-                  CGFloat shift = fcPadding - f.origin.x;
-                  f.origin.x = fcPadding;
+              if (!fcEnabled || fcEdge <= 0) return;
+              UIView *v = self.view;
+              CGRect f = v.frame;
+              // only multi-column AND multi-row (2x2) modules; leave 1x1 and 2x1 alone
+              if (f.size.width < fcEdge * 1.6) return;
+              if (f.size.height < fcEdge * 1.6) return;
+              UIView *parent = v.superview;
+              if (!parent) return;
+              CGFloat baseX = CGFLOAT_MAX;
+              for (UIView *s in parent.subviews) {
+                  if (s == v || s.hidden) continue;
+                  CGFloat sw = s.frame.size.width;
+                  if (sw > fcEdge * 0.6 && sw < fcEdge * 1.4) {
+                      if (s.frame.origin.x < baseX) baseX = s.frame.origin.x;
+                  }
+              }
+              if (baseX != CGFLOAT_MAX && f.origin.x < baseX - 0.5) {
+                  CGFloat shift = baseX - f.origin.x;
+                  f.origin.x = baseX;
                   if (f.size.width > shift) f.size.width -= shift;
-                  self.view.frame = f;
+                  v.frame = f;
               }
           }
 
