@@ -1,0 +1,95 @@
+===== META =====
+run=5 sha=9fe89cd8e359d696bf85172978de978db701c3f8 build_outcome=success
+
+===== MAKE VERSION =====
+GNU Make 4.4.1
+
+===== DEB PRODUCED? =====
+total 8
+drwxr-xr-x  3 runner  staff    96 Oct 20 11:11 .
+drwxr-xr-x  8 runner  staff   256 Oct 20 11:11 ..
+-rw-r--r--  1 runner  staff  3600 Oct 20 11:11 com.henrymoveon.fivecontrol_1.0.0_iphoneos-arm64e.deb
+
+===== DEB CONTENTS =====
+>> Fivecontrol/packages/com.henrymoveon.fivecontrol_1.0.0_iphoneos-arm64e.deb
+
+===== INSTALL LOG TAIL (60) =====
+x AppleTVOS12.4.sdk/usr/lib/libnetwork.tbd
+x AppleTVOS12.4.sdk/usr/lib/libAXSpeechManager.tbd
+x AppleTVOS12.4.sdk/usr/lib/libmenu.tbd
+x AppleTVOS12.4.sdk/usr/lib/libMobileGestaltExtensions.tbd
+x AppleTVOS12.4.sdk/usr/lib/libdl.tbd
+x AppleTVOS12.4.sdk/usr/lib/libMatch.tbd
+x AppleTVOS12.4.sdk/usr/lib/libexslt.0.tbd
+x AppleTVOS12.4.sdk/usr/lib/libiconv.2.tbd
+x AppleTVOS12.4.sdk/usr/lib/libc++abi.tbd
+x AppleTVOS12.4.sdk/usr/lib/libc.tbd
+x AppleTVOS12.4.sdk/usr/lib/libform.tbd
+x AppleTVOS12.4.sdk/usr/lib/libWAPI.tbd
+x AppleTVOS12.4.sdk/usr/lib/libAWDSupportFramework.tbd
+x AppleTVOS12.4.sdk/usr/lib/libreadline.tbd
+x AppleTVOS12.4.sdk/usr/lib/liblangid.tbd
+x AppleTVOS12.4.sdk/usr/lib/libncurses.5.4.tbd
+x AppleTVOS12.4.sdk/usr/lib/libafc.tbd
+x AppleTVOS12.4.sdk/usr/lib/libcharset.1.tbd
+x AppleTVOS12.4.sdk/usr/lib/fdrtrustobject
+x AppleTVOS12.4.sdk/usr/lib/libncurses.tbd
+x AppleTVOS12.4.sdk/usr/lib/libLLVM.tbd100 5693k  100 5693k    0     0  4106k      0  0:00:01  0:00:01 --:--:-- 5056k
+
+x AppleTVOS12.4.sdk/usr/lib/libiconv.tbd
+x AppleTVOS12.4.sdk/usr/lib/liblzma.tbd
+x AppleTVOS12.4.sdk/usr/lib/libncurses.5.tbd
+x AppleTVOS12.4.sdk/usr/lib/libcmph.tbd
+x AppleTVOS12.4.sdk/usr/lib/libCRFSuite0.12.tbd
+x AppleTVOS12.4.sdk/usr/lib/libChineseTokenizer.tbd
+x AppleTVOS12.4.sdk/usr/lib/libc++.1.tbd
+x AppleTVOS12.4.sdk/usr/lib/libz.tbd
+x AppleTVOS12.4.sdk/usr/lib/libm.tbd
+x AppleTVOS12.4.sdk/usr/lib/libipsec.tbd
+x AppleTVOS12.4.sdk/usr/lib/libMaxEnt.tbd
+x AppleTVOS12.4.sdk/usr/lib/libxslt.tbd
+x AppleTVOS12.4.sdk/usr/lib/libperfcheck.tbd
+x AppleTVOS12.4.sdk/usr/lib/libedit.3.tbd
+x AppleTVOS12.4.sdk/usr/lib/libheimdal-asn1.tbd
+x AppleTVOS12.4.sdk/usr/lib/libcupolicy.tbd
+x AppleTVOS12.4.sdk/usr/lib/libbz2.1.0.5.tbd
+x AppleTVOS12.4.sdk/usr/lib/libAppPatch.tbd
+x AppleTVOS12.4.sdk/usr/lib/libquic.tbd
+x AppleTVOS12.4.sdk/usr/lib/libpthread.tbd
+x AppleTVOS12.4.sdk/usr/lib/libAppleSWDHIDFlashUpdater.tbd
+x AppleTVOS12.4.sdk/usr/lib/libutil1.0.tbd
+x AppleTVOS12.4.sdk/usr/lib/libxml2.tbd
+x AppleTVOS12.4.sdk/SDKSettings.plist
+x AppleTVOS12.4.sdk/Entitlements.plist
+
+[0;36m==> [1;36mSDKs successfully installed![m
+[0;34m==> [1;34mTheos Installer:[m Theos has been successfully installed! Restart your shell and then run $THEOS/bin/nic.pl to get started.
+install-theos rc=0
+=== sdks ===
+total 0
+drwxr-xr-x   5 runner  staff  160 Oct 20 11:11 .
+drwxr-xr-x  22 runner  staff  704 Oct 20 11:10 ..
+-rw-r--r--   1 runner  staff    0 Oct 20 11:10 .keep
+drwxr-xr-x   6 runner  staff  192 Nov 23  2023 AppleTVOS12.4.sdk
+drwxr-xr-x   8 runner  staff  256 Nov 23  2023 iPhoneOS16.5.sdk
+=== toolchain ===
+using SDK: 16.5
+
+===== BUILD LOG (last 150 lines) =====
+===== DIAG =====
+SDKTARGET=iphone:clang:16.5:15.0
+make: GNU Make 4.4.1
+/Users/runner/theos/sdks/iPhoneOS16.5.sdk
+Apple clang version 21.0.0 (clang-2100.1.1.101)
+Target: arm64-apple-darwin25.6.0
+===== MAKE =====
+[1;31m> [1;3;39mMaking all for tweak Fivecontrol…[m
+[0;31m==> [1;39mPreprocessing Tweak.xm…[m
+[0;32m==> [1;39mCompiling Tweak.xm (arm64e)…[m
+[0;33m==> [1;39mLinking tweak Fivecontrol (arm64e)…[m
+ld: warning: -multiply_defined is obsolete
+[0;34m==> [1;39mGenerating debug symbols for Fivecontrol…[m
+[0;34m==> [1;39mStripping Fivecontrol (arm64e)…[m
+[0;34m==> [1;39mSigning Fivecontrol…[m
+[1;31m> [1;3;39mMaking stage for tweak Fivecontrol…[m
+dm.pl: building package `com.henrymoveon.fivecontrol:iphoneos-arm64e' in `./packages/com.henrymoveon.fivecontrol_1.0.0_iphoneos-arm64e.deb'
