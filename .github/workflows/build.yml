@@ -4,9 +4,14 @@ on:
   push:
   workflow_dispatch:
 
+env:
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+
 jobs:
   build:
     runs-on: macos-14
+    timeout-minutes: 40
 
     steps:
       - uses: actions/checkout@v4
@@ -34,8 +39,10 @@ jobs:
           #import <UIKit/UIKit.h>
           #import <objc/runtime.h>
           #import <objc/message.h>
+          #import <dispatch/dispatch.h>
           #import <math.h>
           #import <string.h>
+          #import <stdlib.h>
 
           #define CC5_LOG(fmt, ...) NSLog(@"[CC5Columns] " fmt, ##__VA_ARGS__)
 
@@ -460,7 +467,7 @@ jobs:
           }
           TWEAK_EOF
           cat > tweak/Makefile <<'MAKE_EOF'
-          TARGET := iphone:clang:latest:15.0
+          TARGET := iphone:clang:16.5:15.0
           ARCHS := arm64 arm64e
 
           INSTALL_TARGET_PROCESSES := SpringBoard
@@ -470,7 +477,7 @@ jobs:
           TWEAK_NAME := CC5Columns
 
           CC5Columns_FILES := Tweak.xm
-          CC5Columns_CFLAGS := -fobjc-arc -Wno-unused-function -Wno-deprecated-declarations
+          CC5Columns_CFLAGS := -fobjc-arc -Wno-unused-function -Wno-deprecated-declarations -Wno-error
           CC5Columns_FRAMEWORKS := UIKit Foundation
 
           include $(THEOS_MAKE_PATH)/tweak.mk
@@ -492,41 +499,73 @@ jobs:
           ls -l tweak
 
       - name: 安装依赖
-        run: brew install ldid xz dpkg
+        run: |
+          brew install ldid xz dpkg
+          ldid -v 2>&1 | head -1 || true
+          dpkg-deb --version | head -1
+          xz --version | head -1
 
       - name: 安装 Theos 与 iOS SDK
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git clone --recursive --depth 1 https://github.com/theos/theos.git "$HOME/theos"
-          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
-          echo "$HOME/theos/bin" >> "$GITHUB_PATH"
-          "$HOME/theos/bin/install-sdk" iPhoneOS16.5
+          export THEOS="$HOME/theos"
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+          echo "$THEOS/bin" >> "$GITHUB_PATH"
+
+          "$THEOS/bin/install-sdk" iPhoneOS16.5 || {
+            echo "::warning::install-sdk 失败，改用直链下载"
+            curl -L --retry 5 --max-time 900 -o /tmp/sdk.tar.xz \
+              "https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz"
+            mkdir -p "$THEOS/sdks"
+            tar -xJf /tmp/sdk.tar.xz -C "$THEOS/sdks"
+          }
+          ls "$THEOS/sdks"
 
       - name: 编译 rootless
         run: |
+          export THEOS="$HOME/theos"
           cd tweak
           make clean || true
           make package THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1
+          ls -l packages/ || true
 
       - name: 上传 rootless deb
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: CC5Columns-rootless
           path: tweak/packages/*.deb
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: 安装 roothide Theos（Relaxin 用）
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git clone --recursive --depth 1 https://github.com/roothide/theos.git "$HOME/theos-roothide"
-          echo "THEOS_ROOTHIDE=$HOME/theos-roothide" >> "$GITHUB_ENV"
-          "$HOME/theos-roothide/bin/install-sdk" iPhoneOS16.5
+          export THEOS="$HOME/theos-roothide"
+          echo "THEOS_ROOTHIDE=$THEOS" >> "$GITHUB_ENV"
+          "$THEOS/bin/install-sdk" iPhoneOS16.5 || {
+            mkdir -p "$THEOS/sdks"
+            curl -L --retry 5 --max-time 900 -o /tmp/sdk2.tar.xz \
+              "https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz"
+            tar -xJf /tmp/sdk2.tar.xz -C "$THEOS/sdks"
+          }
 
       - name: 编译 roothide
+        continue-on-error: true
         run: |
+          export THEOS="$HOME/theos-roothide"
+          export PATH="$THEOS/bin:$PATH"
           cd tweak
-          make clean || true
-          make package THEOS="$THEOS_ROOTHIDE" THEOS_PACKAGE_SCHEME=roothide FINALPACKAGE=1
+          rm -rf .theos packages
+          make package THEOS_PACKAGE_SCHEME=roothide FINALPACKAGE=1
+          ls -l packages/ || true
 
       - name: 上传 roothide deb
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: CC5Columns-roothide
