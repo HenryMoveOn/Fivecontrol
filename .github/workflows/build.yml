@@ -89,7 +89,7 @@ jobs:
           cat > control <<'EOF_CONTROL'
           Package: com.henrymoveon.fivecontrol
           Name: Fivecontrol
-          Version: 1.0.0
+          Version: 1.0.1
           Architecture: iphoneos-arm64e
           Description: Five columns in Control Center, 80 percent module scale, 33pt corner radius.
           Maintainer: HenryMoveOn
@@ -150,6 +150,20 @@ jobs:
 
           @interface CCUIControlCenterPositionProvider : NSObject
           - (id)_generateRectByIdentifierWithOrderedIdentifiers:(NSArray *)identifiers orderedSizes:(NSArray *)sizes packingOrder:(unsigned long long)arg3 startPosition:(FC_LayoutPoint)arg4 maximumSize:(FC_LayoutSize)arg5 outputLayoutSize:(FC_LayoutSize *)arg6;
+          @end
+
+          @interface UIView (FCRadius)
+          - (void)_setContinuousCornerRadius:(CGFloat)radius;
+          @end
+
+          @interface CCUIButtonModuleView : UIView
+          - (void)_setGlyphImage:(UIImage *)image;
+          @end
+
+          @interface CCUILabeledRoundButton : UIView
+          @end
+
+          @interface CCUIBaseSliderView : UIView
           @end
 
           @interface CCUIContentModuleContainerViewController : UIViewController
@@ -226,29 +240,52 @@ jobs:
               return (r > fcCorner) ? fcCorner : r;
           }
 
-          - (void)viewDidLayoutSubviews {
+          %end
+
+          %hook CCUIButtonModuleView
+
+          - (void)didMoveToWindow {
               %orig;
-              if (!fcEnabled || fcEdge <= 0) return;
-              UIView *v = self.view;
-              CGRect f = v.frame;
-              // only multi-column AND multi-row (2x2) modules; leave 1x1 and 2x1 alone
-              if (f.size.width < fcEdge * 1.6) return;
-              if (f.size.height < fcEdge * 1.6) return;
-              UIView *parent = v.superview;
-              if (!parent) return;
-              CGFloat baseX = CGFLOAT_MAX;
-              for (UIView *s in parent.subviews) {
-                  if (s == v || s.hidden) continue;
-                  CGFloat sw = s.frame.size.width;
-                  if (sw > fcEdge * 0.6 && sw < fcEdge * 1.4) {
-                      if (s.frame.origin.x < baseX) baseX = s.frame.origin.x;
+              if (!fcEnabled) return;
+              Class capCls = NSClassFromString(@"CCUICAPackageView");
+              for (UIView *sub in self.subviews) {
+                  if (capCls && [sub isKindOfClass:capCls]) {
+                      sub.transform = CGAffineTransformMakeScale(fcScale, fcScale);
                   }
               }
-              if (baseX != CGFLOAT_MAX && f.origin.x < baseX - 0.5) {
-                  CGFloat shift = baseX - f.origin.x;
-                  f.origin.x = baseX;
-                  if (f.size.width > shift) f.size.width -= shift;
-                  v.frame = f;
+              Ivar iv = class_getInstanceVariable([self class], "_highlightedBackgroundView");
+              if (iv) {
+                  id hl = *(id *)((char *)(__bridge void *)self + ivar_getOffset(iv));
+                  if (hl) {
+                      CGFloat r = ((UIView *)hl).bounds.size.width * 0.30;
+                      if (r > fcCorner) r = fcCorner;
+                      [hl _setContinuousCornerRadius:r];
+                  }
+              }
+          }
+
+          %end
+
+          %hook CCUILabeledRoundButton
+
+          - (void)didMoveToWindow {
+              %orig;
+              if (!fcEnabled) return;
+              self.transform = CGAffineTransformMakeScale(fcScale, fcScale);
+          }
+
+          %end
+
+          %hook CCUIBaseSliderView
+
+          - (void)didMoveToWindow {
+              %orig;
+              if (!fcEnabled) return;
+              Class capCls = NSClassFromString(@"CCUICAPackageView");
+              for (UIView *sub in self.subviews) {
+                  if (capCls && [sub isKindOfClass:capCls]) {
+                      sub.transform = CGAffineTransformMakeScale(fcScale, fcScale);
+                  }
               }
           }
 
