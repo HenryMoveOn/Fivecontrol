@@ -154,10 +154,6 @@ jobs:
           - (CGFloat)_continuousCornerRadiusForCompactState;
           @end
 
-          @interface CCUIContinuousSliderView : UIView
-          - (void)setContinuousSliderCornerRadius:(CGFloat)arg1;
-          @end
-
           %group Fivecontrol
 
           %hook CCUIMutableLayoutOptions
@@ -194,7 +190,6 @@ jobs:
           - (id)initWithPackFrom:(unsigned long long)arg1 packingOrder:(unsigned long long)arg2 sizeLimit:(FC_LayoutSize)arg3 {
               if (fcEnabled) {
                   if (arg3.width < 10) arg3.width = fcColumns;
-                  if (arg3.height < 10) arg3.height = 4;
               }
               return %orig;
           }
@@ -211,7 +206,6 @@ jobs:
                                                 outputLayoutSize:(FC_LayoutSize *)arg6 {
               if (fcEnabled) {
                   if (arg5.width < 10) arg5.width = fcColumns;
-                  if (arg5.height < 10) arg5.height = 4;
               }
               return %orig;
           }
@@ -221,17 +215,11 @@ jobs:
           %hook CCUIContentModuleContainerViewController
 
           - (CGFloat)_continuousCornerRadiusForCompactState {
-              if (fcEnabled) return fcCorner;
-              return %orig;
-          }
-
-          %end
-
-          %hook CCUIContinuousSliderView
-
-          - (void)setContinuousSliderCornerRadius:(CGFloat)arg1 {
-              if (fcEnabled) arg1 = fcCorner;
-              %orig;
+              if (!fcEnabled) return %orig;
+              CGFloat w = self.view.bounds.size.width;
+              if (w <= 0) return %orig;
+              CGFloat r = w * 0.30;
+              return (r > fcCorner) ? fcCorner : r;
           }
 
           %end
