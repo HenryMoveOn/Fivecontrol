@@ -89,7 +89,7 @@ jobs:
           cat > control <<'EOF_CONTROL'
           Package: com.henrymoveon.fivecontrol
           Name: Fivecontrol
-          Version: 1.0.1
+          Version: 1.0.2
           Architecture: iphoneos-arm64e
           Description: Five columns in Control Center, 80 percent module scale, 33pt corner radius.
           Maintainer: HenryMoveOn
@@ -259,6 +259,16 @@ jobs:
               %orig;
               if (!fcEnabled) return;
               self.transform = CGAffineTransformMakeScale(fcScale, fcScale);
+          }
+
+          - (void)layoutSubviews {
+              %orig;
+              if (!fcEnabled) return;
+              for (UIView *sub in self.subviews) {
+                  CGRect f = sub.frame;
+                  f.origin.y += 3;
+                  sub.frame = f;
+              }
           }
 
           %end
