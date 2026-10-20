@@ -115,6 +115,7 @@ jobs:
           cat > Tweak.xm <<'EOF_TWEAK'
           #import <UIKit/UIKit.h>
           #import <objc/runtime.h>
+          #import <math.h>
 
           typedef struct { unsigned long long width; unsigned long long height; } FC_LayoutSize;
           typedef struct { unsigned long long x; unsigned long long y; } FC_LayoutPoint;
@@ -240,21 +241,31 @@ jobs:
 
           %hook CCUIMutableLayoutOptions
 
+          // Keep the orig call on its own line at the end of the method: a one-line
+          // block "{ orig; return; }" makes the Logos preprocessor drop the closing
+          // brace and the next method then fails to compile.
           - (void)setItemEdgeSize:(CGFloat)edgeSize {
-              if (!fcEnabled || fcApplying) { %orig; return; }
-              // Value we pushed ourselves (or one read back from us): never scale it twice.
-              if (fcAppliedEdge > 0 && fabs(edgeSize - fcAppliedEdge) < 0.01) { %orig; return; }
-              fcBaseEdge = edgeSize;
-              fc_applyLayoutOptions(self);
+              // fcAppliedEdge == value we pushed ourselves -> already scaled, never twice
+              BOOL ours = (fcAppliedEdge > 0 && fabs(edgeSize - fcAppliedEdge) < 0.01);
+              if (fcEnabled && !fcApplying && !ours) {
+                  fcBaseEdge = edgeSize;
+                  fc_applyLayoutOptions(self);
+                  return;
+              }
+              %orig;
           }
 
           - (void)setItemSpacing:(CGFloat)itemSpacing {
-              if (!fcEnabled || fcApplying) { %orig; return; }
-              if (fcAppliedSpacing > 0 && fabs(itemSpacing - fcAppliedSpacing) < 0.01) { %orig; return; }
-              fcBaseSpacing    = itemSpacing;
-              fcBaseSpacingSet = YES;
-              if (fcBaseEdge > 0) { fc_applyLayoutOptions(self); return; }
-              %orig;   // edge not known yet, keep the stock value; it is fixed once edge arrives
+              BOOL ours = (fcAppliedSpacing > 0 && fabs(itemSpacing - fcAppliedSpacing) < 0.01);
+              if (fcEnabled && !fcApplying && !ours) {
+                  fcBaseSpacing    = itemSpacing;
+                  fcBaseSpacingSet = YES;
+                  if (fcBaseEdge > 0) {
+                      fc_applyLayoutOptions(self);
+                      return;
+                  }
+              }
+              %orig;
           }
 
           %end
@@ -287,10 +298,9 @@ jobs:
           %hook CCUIContentModuleContainerViewController
 
           - (CGFloat)_continuousCornerRadiusForCompactState {
-              CGFloat r = %orig;
-              if (!fcEnabled) return r;
+              if (!fcEnabled) return %orig;
               CGFloat w = self.view.bounds.size.width;
-              if (w <= 0) return r;
+              if (w <= 0) return %orig;
               return MIN(fcCorner, w * 0.30);
           }
 
