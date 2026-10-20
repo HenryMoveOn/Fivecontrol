@@ -89,7 +89,7 @@ jobs:
           cat > control <<'EOF_CONTROL'
           Package: com.henrymoveon.fivecontrol
           Name: Fivecontrol
-          Version: 1.0.3
+          Version: 1.0.4
           Architecture: iphoneos-arm64e
           Description: Five columns in Control Center, 80 percent module scale, 33pt corner radius.
           Maintainer: HenryMoveOn
@@ -160,6 +160,9 @@ jobs:
           @end
 
           @interface CCUIBaseSliderView : UIView
+          @end
+
+          @interface CCUIContentModuleContentContainerView : UIView
           @end
 
           @interface CCUIContentModuleContainerViewController : UIViewController
@@ -249,6 +252,24 @@ jobs:
                       sub.transform = CGAffineTransformMakeScale(fcScale, fcScale);
                   }
               }
+              static BOOL once = NO;
+              if (!once && self.window) {
+                  once = YES;
+                  UIWindow *w = self.window;
+                  NSMutableString *chain = [NSMutableString string];
+                  UIView *v = self;
+                  for (int i = 0; i < 6 && v; i++) {
+                      [chain appendFormat:@"%@ < ", NSStringFromClass([v class])];
+                      v = v.superview;
+                  }
+                  UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(4, 50, w.bounds.size.width - 8, 42)];
+                  lbl.text = chain;
+                  lbl.font = [UIFont boldSystemFontOfSize:7];
+                  lbl.textColor = [UIColor redColor];
+                  lbl.backgroundColor = [UIColor yellowColor];
+                  lbl.numberOfLines = 3;
+                  [w addSubview:lbl];
+              }
           }
 
           - (void)layoutSubviews {
@@ -302,6 +323,40 @@ jobs:
                   if (capCls && [sub isKindOfClass:capCls]) {
                       sub.transform = CGAffineTransformMakeScale(fcScale, fcScale);
                   }
+              }
+          }
+
+          %end
+
+          %hook CCUIContentModuleContentContainerView
+
+          - (void)layoutSubviews {
+              %orig;
+              if (!fcEnabled || fcEdge <= 0) return;
+              CGFloat w = self.bounds.size.width;
+              CGFloat h = self.bounds.size.height;
+              if (w < fcEdge * 1.6 || h < fcEdge * 1.6) return;
+              CGFloat minY = CGFLOAT_MAX;
+              CGFloat maxY = -CGFLOAT_MAX;
+              for (UIView *sub in self.subviews) {
+                  if (sub.hidden) continue;
+                  CGFloat sh = sub.frame.size.height;
+                  if (sh <= 0 || sh > h * 0.8) continue;
+                  CGFloat top = CGRectGetMinY(sub.frame);
+                  CGFloat bottom = CGRectGetMaxY(sub.frame);
+                  if (top < minY) minY = top;
+                  if (bottom > maxY) maxY = bottom;
+              }
+              if (minY == CGFLOAT_MAX || maxY <= minY) return;
+              CGFloat shift = (h - (maxY - minY)) / 2.0 - minY;
+              if (shift > -0.5 && shift < 0.5) return;
+              for (UIView *sub in self.subviews) {
+                  if (sub.hidden) continue;
+                  CGFloat sh = sub.frame.size.height;
+                  if (sh <= 0 || sh > h * 0.8) continue;
+                  CGRect f = sub.frame;
+                  f.origin.y += shift;
+                  sub.frame = f;
               }
           }
 
