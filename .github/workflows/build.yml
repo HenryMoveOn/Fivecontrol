@@ -152,10 +152,6 @@ jobs:
           - (id)_generateRectByIdentifierWithOrderedIdentifiers:(NSArray *)identifiers orderedSizes:(NSArray *)sizes packingOrder:(unsigned long long)arg3 startPosition:(FC_LayoutPoint)arg4 maximumSize:(FC_LayoutSize)arg5 outputLayoutSize:(FC_LayoutSize *)arg6;
           @end
 
-          @interface UIView (FCRadius)
-          - (void)_setContinuousCornerRadius:(CGFloat)radius;
-          @end
-
           @interface CCUIButtonModuleView : UIView
           - (void)_setGlyphImage:(UIImage *)image;
           @end
@@ -253,15 +249,6 @@ jobs:
                       sub.transform = CGAffineTransformMakeScale(fcScale, fcScale);
                   }
               }
-              Ivar iv = class_getInstanceVariable([self class], "_highlightedBackgroundView");
-              if (iv) {
-                  id hl = *(id *)((char *)(__bridge void *)self + ivar_getOffset(iv));
-                  if (hl) {
-                      CGFloat r = ((UIView *)hl).bounds.size.width * 0.30;
-                      if (r > fcCorner) r = fcCorner;
-                      [hl _setContinuousCornerRadius:r];
-                  }
-              }
           }
 
           %end
@@ -321,6 +308,13 @@ jobs:
           } 2>&1 | tee -a build.log
           cd Fivecontrol
           "$MAKE_BIN" package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide 2>&1 | tee -a ../build.log
+
+      - name: Show compile errors
+        if: steps.build.outcome == 'failure'
+        run: |
+          grep -n -E "error:" build.log | head -30 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
 
       - name: Save build log to ci-log branch
         if: always()
