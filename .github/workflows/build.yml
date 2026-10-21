@@ -89,7 +89,7 @@ jobs:
           cat > control <<'EOF_CONTROL'
           Package: com.henrymoveon.fivecontrol
           Name: Fivecontrol
-          Version: 1.1.3
+          Version: 1.1.4
           Architecture: iphoneos-arm64e
           Description: Five columns in Control Center, 80 percent module scale, 33pt corner radius.
           Maintainer: HenryMoveOn
@@ -138,6 +138,24 @@ jobs:
               if (!iv) return;
               *(CGFloat *)((char *)(__bridge void *)obj + ivar_getOffset(iv)) = v;
           }
+
+          // Rate-limited NSLog for on-device diagnostics. Inspect on the device
+          // with `log stream | grep Fivecontrol` (over SSH) or Console.app.
+          static void fc_log(NSString *msg) {
+              static NSDate *fc_lastLog = nil;
+              NSDate *now = [NSDate date];
+              if (fc_lastLog && [now timeIntervalSinceDate:fc_lastLog] < 1.0) return;
+              fc_lastLog = now;
+              NSLog(@"[Fivecontrol] %@", msg);
+          }
+
+          // Re-entrancy guard + burst fail-safe state for the position hooks:
+          // a layout that keeps re-positioning the keys after every correction
+          // (e.g. constraint-driven) would otherwise spin forever.
+          static BOOL fc_correcting = NO;
+          static BOOL fcPosFixOff = NO;
+          static NSInteger fc_fixCount = 0;
+          static NSDate *fc_fixWindow = nil;
 
           // The connectivity module's four keys. On iOS 17 they are icon-only
           // round buttons, which may be either CCUIRoundButton or
@@ -230,12 +248,19 @@ jobs:
               CGFloat dx = b.size.width  * 0.5 - (u.origin.x + u.size.width  * 0.5);
               CGFloat dy = b.size.height * 0.5 - (u.origin.y + u.size.height * 0.5);
               if (fabs(dx) < 0.25 && fabs(dy) < 0.25) return;
+              // Moving the buttons goes through the hooked setCenter:, so the
+              // re-entrancy guard must cover the whole loop: without it each
+              // button's own hook would re-enter the correction mid-loop with
+              // a partially-moved (skewed) grid and the result would overshoot.
+              BOOL prevGuard = fc_correcting;
+              fc_correcting = YES;
               for (UIView *btn in btns) {
                   CGPoint c = [area convertPoint:btn.center fromView:btn.superview];
                   c.x += dx;
                   c.y += dy;
                   btn.center = [area convertPoint:c toView:btn.superview];
               }
+              fc_correcting = prevGuard;
               fc_log([NSString stringWithFormat:@"%@: grid centred in %@ (%.0fx%.0f), move (%+.1f,%+.1f)",
                       src, NSStringFromClass([area class]),
                       (double)b.size.width, (double)b.size.height,
@@ -256,14 +281,7 @@ jobs:
               return NO;
           }
 
-          // Re-entrancy guard + burst fail-safe for the position hooks: a
-          // layout that keeps re-positioning the keys after every correction
-          // (e.g. constraint-driven) would otherwise spin forever.
-          static BOOL fc_correcting = NO;
-          static BOOL fcPosFixOff = NO;
-          static NSInteger fc_fixCount = 0;
-          static NSDate *fc_fixWindow = nil;
-
+          // Burst fail-safe window for the position hooks.
           static BOOL fc_positionFixAllowed(void) {
               if (fcPosFixOff) return NO;
               NSDate *now = [NSDate date];
@@ -286,16 +304,6 @@ jobs:
               UIView *area = fc_gridArea(btns);
               if (!area) return;
               fc_centerGrid(btns, area, @"roundButton");
-          }
-
-          // Rate-limited NSLog for on-device diagnostics. Inspect on the device
-          // with `log stream | grep Fivecontrol` (over SSH) or Console.app.
-          static void fc_log(NSString *msg) {
-              static NSDate *fc_lastLog = nil;
-              NSDate *now = [NSDate date];
-              if (fc_lastLog && [now timeIntervalSinceDate:fc_lastLog] < 1.0) return;
-              fc_lastLog = now;
-              NSLog(@"[Fivecontrol] %@", msg);
           }
 
           // Associated-object keys remembering the STOCK (pre-hook) layout
@@ -499,7 +507,7 @@ jobs:
               if (b.size.width <= 0 || b.size.height <= 0) return;
 
               // Only the 2x2 connectivity module: its container holds exactly
-              // four CCUILabeledRoundButton views.
+              // four round buttons (CCUIRoundButton / CCUILabeledRoundButton).
               NSMutableArray *btns = [NSMutableArray array];
               fc_collectRoundButtons(v, btns);
               fc_log([NSString stringWithFormat:@"container %@: %lu round buttons, bounds %.0fx%.0f",
