@@ -1,12 +1,17 @@
 ===== META =====
-run=27 sha=81607f1709c8711bbd3f721c1c27f5c3d56d8991 build_outcome=failure
+run=28 sha=24175b02097f79484fb844b148ca7515891167ce build_outcome=success
 
 ===== MAKE VERSION =====
 GNU Make 4.4.1
 
 ===== DEB PRODUCED? =====
+total 16
+drwxr-xr-x  3 runner  staff    96 Oct 21 08:47 .
+drwxr-xr-x  8 runner  staff   256 Oct 21 08:47 ..
+-rw-r--r--  1 runner  staff  7982 Oct 21 08:47 com.henrymoveon.fivecontrol_1.1.2_iphoneos-arm64e.deb
 
 ===== DEB CONTENTS =====
+>> Fivecontrol/packages/com.henrymoveon.fivecontrol_1.1.2_iphoneos-arm64e.deb
 
 ===== INSTALL LOG TAIL (60) =====
 x AppleTVOS12.4.sdk/usr/lib/libnetwork.tbd
@@ -29,7 +34,7 @@ x AppleTVOS12.4.sdk/usr/lib/libafc.tbd
 x AppleTVOS12.4.sdk/usr/lib/libcharset.1.tbd
 x AppleTVOS12.4.sdk/usr/lib/fdrtrustobject
 x AppleTVOS12.4.sdk/usr/lib/libncurses.tbd
-x AppleTVOS12.4.sdk/usr/lib/libLLVM.tbd100 5693k  100 5693k    0     0  2446k      0  0:00:02  0:00:02 --:--:-- 2757k
+x AppleTVOS12.4.sdk/usr/lib/libLLVM.tbd100 5693k  100 5693k    0     0  3152k      0  0:00:01  0:00:01 --:--:-- 3819k
 
 x AppleTVOS12.4.sdk/usr/lib/libiconv.tbd
 x AppleTVOS12.4.sdk/usr/lib/liblzma.tbd
@@ -62,9 +67,9 @@ x AppleTVOS12.4.sdk/Entitlements.plist
 install-theos rc=0
 === sdks ===
 total 0
-drwxr-xr-x   5 runner  staff  160 Oct 21 07:54 .
-drwxr-xr-x  22 runner  staff  704 Oct 21 07:53 ..
--rw-r--r--   1 runner  staff    0 Oct 21 07:53 .keep
+drwxr-xr-x   5 runner  staff  160 Oct 21 08:46 .
+drwxr-xr-x  22 runner  staff  704 Oct 21 08:46 ..
+-rw-r--r--   1 runner  staff    0 Oct 21 08:46 .keep
 drwxr-xr-x   6 runner  staff  192 Nov 23  2023 AppleTVOS12.4.sdk
 drwxr-xr-x   8 runner  staff  256 Nov 23  2023 iPhoneOS16.5.sdk
 === toolchain ===
@@ -81,45 +86,10 @@ Target: arm64-apple-darwin25.6.0
 [1;31m> [1;3;39mMaking all for tweak Fivecontrol…[m
 [0;31m==> [1;39mPreprocessing Tweak.xm…[m
 [0;32m==> [1;39mCompiling Tweak.xm (arm64e)…[m
-[1mTweak.xm:136:31: [0m[0;1;31merror: [0m[1mno matching function for call to 'objc_getAssociatedObject'[0m
-  136 |     NSNumber *stockSpacingN = objc_getAssociatedObject(self, kFCStockSpacingKey);[0m
-      | [0;1;32m                              ^~~~~~~~~~~~~~~~~~~~~~~~
-[0m[1m/Users/runner/theos/sdks/iPhoneOS16.5.sdk/usr/include/objc/runtime.h:1679:1: [0m[0;1;36mnote: [0mcandidate function not viable: cannot implicitly convert argument of type 'NSString *const __strong' to 'const void * _Nonnull' for 2nd argument under ARC[0m
- 1679 | objc_getAssociatedObject(id _Nonnull object, const void * _Nonnull key)[0m
-      | [0;1;32m^                                            ~~~~~~~~~~~~~~~~~~~~~~~~~
-[0m[1mTweak.xm:146:28: [0m[0;1;31merror: [0m[1mno matching function for call to 'objc_getAssociatedObject'[0m
-  146 |     NSNumber *stockEdgeN = objc_getAssociatedObject(self, kFCStockEdgeKey);[0m
-      | [0;1;32m                           ^~~~~~~~~~~~~~~~~~~~~~~~
-[0m[1m/Users/runner/theos/sdks/iPhoneOS16.5.sdk/usr/include/objc/runtime.h:1679:1: [0m[0;1;36mnote: [0mcandidate function not viable: cannot implicitly convert argument of type 'NSString *const __strong' to 'const void * _Nonnull' for 2nd argument under ARC[0m
- 1679 | objc_getAssociatedObject(id _Nonnull object, const void * _Nonnull key)[0m
-      | [0;1;32m^                                            ~~~~~~~~~~~~~~~~~~~~~~~~~
-[0m[1mTweak.xm:161:28: [0m[0;1;31merror: [0m[1mno matching function for call to 'objc_getAssociatedObject'[0m
-  161 |     NSNumber *stockEdgeN = objc_getAssociatedObject(self, kFCStockEdgeKey);[0m
-      | [0;1;32m                           ^~~~~~~~~~~~~~~~~~~~~~~~
-[0m[1m/Users/runner/theos/sdks/iPhoneOS16.5.sdk/usr/include/objc/runtime.h:1679:1: [0m[0;1;36mnote: [0mcandidate function not viable: cannot implicitly convert argument of type 'NSString *const __strong' to 'const void * _Nonnull' for 2nd argument under ARC[0m
- 1679 | objc_getAssociatedObject(id _Nonnull object, const void * _Nonnull key)[0m
-      | [0;1;32m^                                            ~~~~~~~~~~~~~~~~~~~~~~~~~
-[0m[1mTweak.xm:175:31: [0m[0;1;31merror: [0m[1mno matching function for call to 'objc_getAssociatedObject'[0m
-  175 |     NSNumber *stockSpacingN = objc_getAssociatedObject(self, kFCStockSpacingKey);[0m
-      | [0;1;32m                              ^~~~~~~~~~~~~~~~~~~~~~~~
-[0m[1m/Users/runner/theos/sdks/iPhoneOS16.5.sdk/usr/include/objc/runtime.h:1679:1: [0m[0;1;36mnote: [0mcandidate function not viable: cannot implicitly convert argument of type 'NSString *const __strong' to 'const void * _Nonnull' for 2nd argument under ARC[0m
- 1679 | objc_getAssociatedObject(id _Nonnull object, const void * _Nonnull key)[0m
-      | [0;1;32m^                                            ~~~~~~~~~~~~~~~~~~~~~~~~~
-[0m[1mTweak.xm:194:5: [0m[0;1;31merror: [0m[1mno matching function for call to 'objc_setAssociatedObject'[0m
-  194 |     objc_setAssociatedObject(self, kFCStockEdgeKey, @(stockEdge), OBJC_ASSOCIATION_RETAIN_NONATOMIC);[0m
-      | [0;1;32m    ^~~~~~~~~~~~~~~~~~~~~~~~
-[0m[1m/Users/runner/theos/sdks/iPhoneOS16.5.sdk/usr/include/objc/runtime.h:1664:1: [0m[0;1;36mnote: [0mcandidate function not viable: cannot implicitly convert argument of type 'NSString *const __strong' to 'const void * _Nonnull' for 2nd argument under ARC[0m
- 1664 | objc_setAssociatedObject(id _Nonnull object, const void * _Nonnull key,[0m
-      | [0;1;32m^                                            ~~~~~~~~~~~~~~~~~~~~~~~~~
-[0m[1mTweak.xm:195:5: [0m[0;1;31merror: [0m[1mno matching function for call to 'objc_setAssociatedObject'[0m
-  195 |     objc_setAssociatedObject(self, kFCStockSpacingKey, @(stockSpacing), OBJC_ASSOCIATION_RETAIN_NONATOMIC);[0m
-      | [0;1;32m    ^~~~~~~~~~~~~~~~~~~~~~~~
-[0m[1m/Users/runner/theos/sdks/iPhoneOS16.5.sdk/usr/include/objc/runtime.h:1664:1: [0m[0;1;36mnote: [0mcandidate function not viable: cannot implicitly convert argument of type 'NSString *const __strong' to 'const void * _Nonnull' for 2nd argument under ARC[0m
- 1664 | objc_setAssociatedObject(id _Nonnull object, const void * _Nonnull key,[0m
-      | [0;1;32m^                                            ~~~~~~~~~~~~~~~~~~~~~~~~~
-[0m6 errors generated.
-gmake[3]: *** [/Users/runner/theos/makefiles/instance/rules.mk:420: /Users/runner/work/Fivecontrol/Fivecontrol/Fivecontrol/.theos/obj/arm64e/Tweak.xm.149008df.o] Error 1
-rm /Users/runner/work/Fivecontrol/Fivecontrol/Fivecontrol/.theos/obj/arm64e/Tweak.xm.mm
-gmake[2]: *** [/Users/runner/theos/makefiles/instance/library.mk:52: /Users/runner/work/Fivecontrol/Fivecontrol/Fivecontrol/.theos/obj/arm64e/Fivecontrol.dylib] Error 2
-gmake[1]: *** [/Users/runner/theos/makefiles/instance/library.mk:37: internal-library-all_] Error 2
-gmake: *** [/Users/runner/theos/makefiles/master/rules.mk:146: Fivecontrol.all.tweak.variables] Error 2
+[0;33m==> [1;39mLinking tweak Fivecontrol (arm64e)…[m
+ld: warning: -multiply_defined is obsolete
+[0;34m==> [1;39mGenerating debug symbols for Fivecontrol…[m
+[0;34m==> [1;39mStripping Fivecontrol (arm64e)…[m
+[0;34m==> [1;39mSigning Fivecontrol…[m
+[1;31m> [1;3;39mMaking stage for tweak Fivecontrol…[m
+dm.pl: building package `com.henrymoveon.fivecontrol:iphoneos-arm64e' in `./packages/com.henrymoveon.fivecontrol_1.1.2_iphoneos-arm64e.deb'
