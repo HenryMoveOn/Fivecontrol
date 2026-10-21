@@ -89,7 +89,7 @@ jobs:
           cat > control <<'EOF_CONTROL'
           Package: com.henrymoveon.fivecontrol
           Name: Fivecontrol
-          Version: 1.1.1
+          Version: 1.1.2
           Architecture: iphoneos-arm64e
           Description: Five columns in Control Center, 80 percent module scale, 33pt corner radius.
           Maintainer: HenryMoveOn
@@ -160,10 +160,47 @@ jobs:
               }
           }
 
+          // Rate-limited NSLog for on-device diagnostics. Inspect on the device
+          // with `log stream | grep Fivecontrol` (over SSH) or Console.app.
+          static void fc_log(NSString *msg) {
+              static NSDate *fc_lastLog = nil;
+              NSDate *now = [NSDate date];
+              if (fc_lastLog && [now timeIntervalSinceDate:fc_lastLog] < 1.0) return;
+              fc_lastLog = now;
+              NSLog(@"[Fivecontrol] %@", msg);
+          }
+
+          // Associated-object keys remembering the STOCK (pre-hook) layout
+          // values per CCUIMutableLayoutOptions instance, so the 4->5 column
+          // reduction is always derived from the same original pair.
+          static NSString *const kFCStockEdgeKey = @"fc.stockEdge";
+          static NSString *const kFCStockSpacingKey = @"fc.stockSpacing";
+
+          // Most recent STOCK pair, process-wide. A mutableCopy of an already
+          // reduced options object inherits our reduced ivars but no associated
+          // stock, so the inherited value is restored from here when it matches
+          // the reduction signature exactly.
+          static CGFloat fcRefEdge = 0;
+          static CGFloat fcRefSpacing = 0;
+
+          // The enclosing CCUIContentModuleContainerViewController's view, or nil.
+          static UIView *fc_moduleContainerView(UIView *v) {
+              static Class cls = nil;
+              if (!cls) cls = NSClassFromString(@"CCUIContentModuleContainerViewController");
+              if (!cls) return nil;
+              for (UIView *a = v; a; a = a.superview) {
+                  UIResponder *r = a.nextResponder;
+                  if ([r isKindOfClass:cls]) return [(UIViewController *)r view];
+              }
+              return nil;
+          }
+
           @interface CCUIMutableLayoutOptions : NSObject
           - (void)setItemEdgeSize:(CGFloat)edgeSize;
           - (void)setItemSpacing:(CGFloat)itemSpacing;
-          - (void)fc_recalculate;
+          - (void)fc_recalculateWithFreshEdge:(CGFloat)freshEdge;
+          - (void)fc_recalculateWithFreshSpacing:(CGFloat)freshSpacing;
+          - (void)fc_applyStockEdge:(CGFloat)stockEdge stockSpacing:(CGFloat)stockSpacing;
           @end
 
           @interface CCUIControlCenterPositionProviderPackingRule : NSObject
@@ -179,6 +216,7 @@ jobs:
           @end
 
           @interface CCUILabeledRoundButton : UIView
+          - (void)fc_recenterInSiblings;
           @end
 
           @interface CCUIBaseSliderView : UIView
@@ -195,22 +233,85 @@ jobs:
 
           - (void)setItemEdgeSize:(CGFloat)edgeSize {
               %orig;
-              [self fc_recalculate];
+              [self fc_recalculateWithFreshEdge:edgeSize];
           }
 
           - (void)setItemSpacing:(CGFloat)itemSpacing {
               %orig;
-              [self fc_recalculate];
+              [self fc_recalculateWithFreshSpacing:itemSpacing];
           }
 
+          // The value the system just passed to the edge setter is
+          // authoritative. The spacing is restored from the remembered stock
+          // pair - reading the current ivar would compound our own reduction
+          // across layout passes.
           %new
-          - (void)fc_recalculate {
+          - (void)fc_recalculateWithFreshEdge:(CGFloat)freshEdge {
+              CGFloat stockSpacing;
+              NSNumber *stockSpacingN = objc_getAssociatedObject(self, kFCStockSpacingKey);
+              if (stockSpacingN) {
+                  stockSpacing = stockSpacingN.doubleValue;
+              } else {
+                  stockSpacing = fc_getIvar(self, "_itemSpacing");
+                  if (fcRefSpacing > 0 && fabs(stockSpacing - fcRefSpacing * fcScale) < 0.5) {
+                      stockSpacing = fcRefSpacing;
+                  }
+              }
+              CGFloat stockEdge = freshEdge;
+              NSNumber *stockEdgeN = objc_getAssociatedObject(self, kFCStockEdgeKey);
+              if (stockEdgeN) {
+                  CGFloat prevEdge = stockEdgeN.doubleValue;
+                  CGFloat reducedEdge = (prevEdge * 4 + stockSpacing * 3
+                                         - stockSpacing * fcScale * 4) / (CGFloat)fcColumns;
+                  // Ignore our own reduced value being re-fed into the setter.
+                  if (fabs(freshEdge - reducedEdge) < 0.5) stockEdge = prevEdge;
+              }
+              [self fc_applyStockEdge:stockEdge stockSpacing:stockSpacing];
+          }
+
+          // Mirror of the above for the spacing setter.
+          %new
+          - (void)fc_recalculateWithFreshSpacing:(CGFloat)freshSpacing {
+              CGFloat stockEdge;
+              NSNumber *stockEdgeN = objc_getAssociatedObject(self, kFCStockEdgeKey);
+              if (stockEdgeN) {
+                  stockEdge = stockEdgeN.doubleValue;
+              } else {
+                  stockEdge = fc_getIvar(self, "_itemEdgeSize");
+                  if (fcRefEdge > 0 && fcRefSpacing > 0) {
+                      CGFloat reducedRef = (fcRefEdge * 4 + fcRefSpacing * 3
+                                            - fcRefSpacing * fcScale * 4) / (CGFloat)fcColumns;
+                      if (reducedRef > 0 && fabs(stockEdge - reducedRef) < 0.5) {
+                          stockEdge = fcRefEdge;
+                      }
+                  }
+              }
+              CGFloat stockSpacing = freshSpacing;
+              NSNumber *stockSpacingN = objc_getAssociatedObject(self, kFCStockSpacingKey);
+              if (stockSpacingN) {
+                  // Ignore our own reduced value being re-fed into the setter.
+                  if (fabs(freshSpacing - stockSpacingN.doubleValue * fcScale) < 0.5) {
+                      stockSpacing = stockSpacingN.doubleValue;
+                  }
+              }
+              [self fc_applyStockEdge:stockEdge stockSpacing:stockSpacing];
+          }
+
+          // Derive the 4->5 column reduction from the remembered STOCK pair.
+          // Recomputing from the already-reduced values drifts further on
+          // every setter call (mutableCopy + a single setter compounds the
+          // reduction), which leaves the module size and the internal grid
+          // computed from different states.
+          %new
+          - (void)fc_applyStockEdge:(CGFloat)stockEdge stockSpacing:(CGFloat)stockSpacing {
               if (!fcEnabled || fcColumns < 5) return;
-              CGFloat edgeSize = fc_getIvar(self, "_itemEdgeSize");
-              CGFloat itemSpacing = fc_getIvar(self, "_itemSpacing");
-              if (edgeSize <= 0 || itemSpacing <= 0) return;
-              CGFloat totalWidth = edgeSize * 4 + itemSpacing * 3;
-              CGFloat newSpacing = itemSpacing * fcScale;
+              if (stockEdge <= 0 || stockSpacing <= 0) return;
+              objc_setAssociatedObject(self, kFCStockEdgeKey, @(stockEdge), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+              objc_setAssociatedObject(self, kFCStockSpacingKey, @(stockSpacing), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+              fcRefEdge = stockEdge;
+              fcRefSpacing = stockSpacing;
+              CGFloat totalWidth = stockEdge * 4 + stockSpacing * 3;
+              CGFloat newSpacing = stockSpacing * fcScale;
               CGFloat newEdge = (totalWidth - newSpacing * 4) / (CGFloat)fcColumns;
               if (newEdge > 0) {
                   fcEdge = newEdge;
@@ -242,7 +343,12 @@ jobs:
                                                      maximumSize:(FC_LayoutSize)arg5
                                                 outputLayoutSize:(FC_LayoutSize *)arg6 {
               if (fcEnabled) {
-                  if (arg5.width < 10) arg5.width = fcColumns;
+                  if (arg5.width < 10) {
+                      fc_log([NSString stringWithFormat:@"provider: %lu modules, maximumSize.width %llu -> %lu",
+                              (unsigned long)identifiers.count, arg5.width,
+                              (unsigned long)fcColumns]);
+                      arg5.width = fcColumns;
+                  }
               }
               return %orig;
           }
@@ -276,6 +382,9 @@ jobs:
               // four CCUILabeledRoundButton views.
               NSMutableArray *btns = [NSMutableArray array];
               fc_collectRoundButtons(v, btns);
+              fc_log([NSString stringWithFormat:@"container %@: %lu round buttons, bounds %.0fx%.0f",
+                      NSStringFromClass([self class]), (unsigned long)btns.count,
+                      (double)b.size.width, (double)b.size.height]);
               if (btns.count != 4) return;
 
               // Union bbox of the four keys, converted into the module's own
@@ -294,6 +403,10 @@ jobs:
               CGFloat dx = b.size.width  * 0.5 - (u.origin.x + u.size.width  * 0.5);
               CGFloat dy = b.size.height * 0.5 - (u.origin.y + u.size.height * 0.5);
               if (fabs(dx) < 0.25 && fabs(dy) < 0.25) return;
+              fc_log([NSString stringWithFormat:@"container recenter: union (%.0f,%.0f,%.0f,%.0f) move (%+.1f,%+.1f)",
+                      (double)u.origin.x, (double)u.origin.y,
+                      (double)u.size.width, (double)u.size.height,
+                      (double)dx, (double)dy]);
               for (UIView *btn in btns) {
                   CGPoint c = [v convertPoint:btn.center fromView:btn.superview];
                   c.x += dx;
@@ -342,6 +455,60 @@ jobs:
               self.transform = CGAffineTransformMakeScale(fcScale, fcScale);
           }
 
+          - (void)layoutSubviews {
+              %orig;
+              [self fc_recenterInSiblings];
+          }
+
+          // Second, independent recenter path: fires whenever a key itself
+          // lays out, which also covers the case where the container-level
+          // hook ran before the keys had been positioned. It targets the same
+          // centre (the enclosing module container) as the container hook, so
+          // the two can never fight over the position.
+          %new
+          - (void)fc_recenterInSiblings {
+              if (!fcEnabled) return;
+              UIView *parent = self.superview;
+              if (!parent) return;
+
+              // Only the 2x2 connectivity module has four round buttons
+              // sharing one direct parent.
+              NSMutableArray *btns = [NSMutableArray array];
+              Class target = fc_roundButtonClass();
+              if (!target) return;
+              for (UIView *s in parent.subviews) {
+                  if ([s isKindOfClass:target]) [btns addObject:s];
+              }
+              if (btns.count != 4) return;
+
+              // Leader election: only the first key moves the group, so the
+              // delta is applied exactly once per pass.
+              if (btns.firstObject != self) return;
+
+              UIView *targetView = fc_moduleContainerView(parent);
+              if (!targetView) return;
+              CGRect b = targetView.bounds;
+              if (b.size.width <= 0 || b.size.height <= 0) return;
+
+              CGRect u = CGRectNull;
+              for (UIView *btn in btns) {
+                  u = CGRectUnion(u, [targetView convertRect:btn.bounds fromView:btn]);
+              }
+              if (CGRectIsNull(u) || u.size.width <= 0 || u.size.height <= 0) return;
+
+              CGFloat dx = b.size.width  * 0.5 - (u.origin.x + u.size.width  * 0.5);
+              CGFloat dy = b.size.height * 0.5 - (u.origin.y + u.size.height * 0.5);
+              if (fabs(dx) < 0.25 && fabs(dy) < 0.25) return;
+              for (UIView *btn in btns) {
+                  CGPoint c = [targetView convertPoint:btn.center fromView:btn.superview];
+                  c.x += dx;
+                  c.y += dy;
+                  btn.center = [targetView convertPoint:c toView:btn.superview];
+              }
+              fc_log([NSString stringWithFormat:@"roundButton recenter: parent %@, move (%+.1f,%+.1f)",
+                      NSStringFromClass([parent class]), (double)dx, (double)dy]);
+          }
+
           %end
 
           %hook CCUIBaseSliderView
@@ -366,8 +533,15 @@ jobs:
           %end
 
           %ctor {
-              if (!objc_getClass("CCUIMutableLayoutOptions")) {
-                  NSLog(@"[Fivecontrol] CCUIMutableLayoutOptions not found - layout hook may be skipped");
+              Class optCls = objc_getClass("CCUIMutableLayoutOptions");
+              Class btnCls = fc_roundButtonClass();
+              Class contCls = objc_getClass("CCUIContentModuleContainerViewController");
+              Class provCls = objc_getClass("CCUIControlCenterPositionProvider");
+              NSLog(@"[Fivecontrol] init on iOS %@ (options=%d roundButton=%d container=%d provider=%d)",
+                    [UIDevice currentDevice].systemVersion,
+                    optCls != nil, btnCls != nil, contCls != nil, provCls != nil);
+              if (!optCls) {
+                  NSLog(@"[Fivecontrol] CCUIMutableLayoutOptions not found - layout hook skipped");
               }
               %init(Fivecontrol);
           }
