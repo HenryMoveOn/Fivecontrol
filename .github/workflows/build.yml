@@ -89,7 +89,7 @@ jobs:
           cat > control <<'EOF_CONTROL'
           Package: com.henrymoveon.fivecontrol
           Name: Fivecontrol
-          Version: 1.1.0
+          Version: 1.1.1
           Architecture: iphoneos-arm64e
           Description: Five columns in Control Center, 80 percent module scale, 33pt corner radius.
           Maintainer: HenryMoveOn
@@ -123,7 +123,7 @@ jobs:
           static NSUInteger fcColumns = 5;
           static CGFloat fcScale = 0.8;
           static CGFloat fcCorner = 33.0;
-          static CGFloat fcShiftAdjust = 0.0;
+          static CGFloat fcShiftDown = 15.0;
           static CGFloat fcEdge = 0;
           static CGFloat fcSpacing = 0;
 
@@ -155,7 +155,6 @@ jobs:
 
           @interface CCUIButtonModuleView : UIView
           - (void)_setGlyphImage:(UIImage *)image;
-          - (void)fc_centerIcons;
           @end
 
           @interface CCUILabeledRoundButton : UIView
@@ -245,46 +244,25 @@ jobs:
           - (void)didMoveToWindow {
               %orig;
               if (!fcEnabled) return;
-              __weak CCUIButtonModuleView *weakSelf = self;
-              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                  CCUIButtonModuleView *btn = weakSelf;
-                  if (btn) [btn fc_centerIcons];
-              });
+              Class capCls = NSClassFromString(@"CCUICAPackageView");
+              for (UIView *sub in self.subviews) {
+                  if (capCls && [sub isKindOfClass:capCls]) {
+                      CGAffineTransform t = CGAffineTransformMakeScale(fcScale, fcScale);
+                      t = CGAffineTransformConcat(t, CGAffineTransformMakeTranslation(0, fcShiftDown));
+                      sub.transform = t;
+                  }
+              }
           }
 
-          %new
-          - (void)fc_centerIcons {
-              UIView *parent = self.superview;
-              if (!parent) return;
-              Class btnCls = NSClassFromString(@"CCUIButtonModuleView");
+          - (void)layoutSubviews {
+              %orig;
+              if (!fcEnabled) return;
               Class capCls = NSClassFromString(@"CCUICAPackageView");
-              if (!btnCls || !capCls) return;
-              NSMutableArray *btns = [NSMutableArray array];
-              for (UIView *sib in parent.subviews) {
-                  if ([sib isKindOfClass:btnCls]) [btns addObject:sib];
-              }
-              if (btns.count < 2) return;
-              CGFloat ph = parent.bounds.size.height;
-              if (ph <= 0) return;
-              CGFloat minY = CGFLOAT_MAX;
-              CGFloat maxY = -CGFLOAT_MAX;
-              for (UIView *b in btns) {
-                  CGRect r = [b convertRect:b.bounds toView:parent];
-                  CGFloat t = CGRectGetMinY(r);
-                  CGFloat bt = CGRectGetMaxY(r);
-                  if (t < minY) minY = t;
-                  if (bt > maxY) maxY = bt;
-              }
-              if (minY == CGFLOAT_MAX || maxY <= minY) return;
-              CGFloat shift = (ph - (maxY - minY)) / 2.0 - minY + fcShiftAdjust;
-              if (shift > 90 || shift < -90) return;
-              for (UIView *b in btns) {
-                  for (UIView *sub in b.subviews) {
-                      if ([sub isKindOfClass:capCls]) {
-                          CGAffineTransform t = CGAffineTransformMakeScale(fcScale, fcScale);
-                          t = CGAffineTransformConcat(t, CGAffineTransformMakeTranslation(0, shift));
-                          sub.transform = t;
-                      }
+              for (UIView *sub in self.subviews) {
+                  if (capCls && [sub isKindOfClass:capCls]) {
+                      CGAffineTransform t = CGAffineTransformMakeScale(fcScale, fcScale);
+                      t = CGAffineTransformConcat(t, CGAffineTransformMakeTranslation(0, fcShiftDown));
+                      sub.transform = t;
                   }
               }
           }
