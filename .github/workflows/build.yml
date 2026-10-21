@@ -139,6 +139,27 @@ jobs:
               *(CGFloat *)((char *)(__bridge void *)obj + ivar_getOffset(iv)) = v;
           }
 
+          static Class fc_roundButtonClass(void) {
+              static Class cls = nil;
+              if (!cls) cls = NSClassFromString(@"CCUILabeledRoundButton");
+              return cls;
+          }
+
+          // Recursively collect CCUILabeledRoundButton views (the 2x2 connectivity
+          // module's four keys), bailing out early once more than 4 are found.
+          static void fc_collectRoundButtons(UIView *view, NSMutableArray *out) {
+              Class target = fc_roundButtonClass();
+              if (!target) return;
+              for (UIView *sub in view.subviews) {
+                  if ([sub isKindOfClass:target]) {
+                      [out addObject:sub];
+                  } else {
+                      fc_collectRoundButtons(sub, out);
+                  }
+                  if (out.count > 4) return;
+              }
+          }
+
           @interface CCUIMutableLayoutOptions : NSObject
           - (void)setItemEdgeSize:(CGFloat)edgeSize;
           - (void)setItemSpacing:(CGFloat)itemSpacing;
@@ -165,6 +186,7 @@ jobs:
 
           @interface CCUIContentModuleContainerViewController : UIViewController
           - (CGFloat)_continuousCornerRadiusForCompactState;
+          - (void)fc_recenterConnectivityButtons;
           @end
 
           %group Fivecontrol
@@ -235,6 +257,49 @@ jobs:
               if (w <= 0) return %orig;
               CGFloat r = w * 0.30;
               return (r > fcCorner) ? fcCorner : r;
+          }
+
+          - (void)viewDidLayoutSubviews {
+              %orig;
+              [self fc_recenterConnectivityButtons];
+          }
+
+          %new
+          - (void)fc_recenterConnectivityButtons {
+              if (!fcEnabled) return;
+              UIView *v = self.view;
+              if (!v) return;
+              CGRect b = v.bounds;
+              if (b.size.width <= 0 || b.size.height <= 0) return;
+
+              // Only the 2x2 connectivity module: its container holds exactly
+              // four CCUILabeledRoundButton views.
+              NSMutableArray *btns = [NSMutableArray array];
+              fc_collectRoundButtons(v, btns);
+              if (btns.count != 4) return;
+
+              // Union bbox of the four keys, converted into the module's own
+              // coordinate space (works through any intermediate views and the
+              // 0.8 scale transform).
+              CGRect u = CGRectNull;
+              for (UIView *btn in btns) {
+                  if (!btn.superview) return;
+                  u = CGRectUnion(u, [v convertRect:btn.bounds fromView:btn]);
+              }
+              if (CGRectIsNull(u) || u.size.width <= 0 || u.size.height <= 0) return;
+
+              // Translate only - keep every key's size and the grid spacing.
+              // This re-centers the 2x2 grid after the stock layout has placed
+              // it off-center, and re-runs on every layout pass so it always wins.
+              CGFloat dx = b.size.width  * 0.5 - (u.origin.x + u.size.width  * 0.5);
+              CGFloat dy = b.size.height * 0.5 - (u.origin.y + u.size.height * 0.5);
+              if (fabs(dx) < 0.25 && fabs(dy) < 0.25) return;
+              for (UIView *btn in btns) {
+                  CGPoint c = [v convertPoint:btn.center fromView:btn.superview];
+                  c.x += dx;
+                  c.y += dy;
+                  btn.center = [v convertPoint:c toView:btn.superview];
+              }
           }
 
           %end
