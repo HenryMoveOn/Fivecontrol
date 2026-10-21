@@ -173,8 +173,10 @@ jobs:
           // Associated-object keys remembering the STOCK (pre-hook) layout
           // values per CCUIMutableLayoutOptions instance, so the 4->5 column
           // reduction is always derived from the same original pair.
-          static NSString *const kFCStockEdgeKey = @"fc.stockEdge";
-          static NSString *const kFCStockSpacingKey = @"fc.stockSpacing";
+          // NOTE: must be `const void *` - ARC forbids passing an NSString *
+          // to objc_get/setAssociatedObject without a bridge cast.
+          static const void *kFCStockEdgeKey = &kFCStockEdgeKey;
+          static const void *kFCStockSpacingKey = &kFCStockSpacingKey;
 
           // Most recent STOCK pair, process-wide. A mutableCopy of an already
           // reduced options object inherits our reduced ivars but no associated
