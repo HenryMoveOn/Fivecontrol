@@ -89,7 +89,7 @@ jobs:
           cat > control <<'EOF_CONTROL'
           Package: com.henrymoveon.fivecontrol
           Name: Fivecontrol
-          Version: 1.1.2
+          Version: 1.1.3
           Architecture: iphoneos-arm64e
           Description: Five columns in Control Center, 80 percent module scale, 33pt corner radius.
           Maintainer: HenryMoveOn
@@ -139,25 +139,153 @@ jobs:
               *(CGFloat *)((char *)(__bridge void *)obj + ivar_getOffset(iv)) = v;
           }
 
-          static Class fc_roundButtonClass(void) {
-              static Class cls = nil;
-              if (!cls) cls = NSClassFromString(@"CCUILabeledRoundButton");
-              return cls;
+          // The connectivity module's four keys. On iOS 17 they are icon-only
+          // round buttons, which may be either CCUIRoundButton or
+          // CCUILabeledRoundButton - match both so the collector never
+          // silently finds nothing.
+          static BOOL fc_isRoundButton(UIView *v) {
+              if (!v) return NO;
+              static Class labeled = nil;
+              static Class plain = nil;
+              static BOOL resolved = NO;
+              if (!resolved) {
+                  labeled = NSClassFromString(@"CCUILabeledRoundButton");
+                  plain = NSClassFromString(@"CCUIRoundButton");
+                  resolved = YES;
+              }
+              if (labeled && [v isKindOfClass:labeled]) return YES;
+              if (plain && [v isKindOfClass:plain]) return YES;
+              return NO;
           }
 
-          // Recursively collect CCUILabeledRoundButton views (the 2x2 connectivity
+          // Recursively collect round-button views (the 2x2 connectivity
           // module's four keys), bailing out early once more than 4 are found.
           static void fc_collectRoundButtons(UIView *view, NSMutableArray *out) {
-              Class target = fc_roundButtonClass();
-              if (!target) return;
               for (UIView *sub in view.subviews) {
-                  if ([sub isKindOfClass:target]) {
+                  if (fc_isRoundButton(sub)) {
                       [out addObject:sub];
                   } else {
                       fc_collectRoundButtons(sub, out);
                   }
                   if (out.count > 4) return;
               }
+          }
+
+          static NSArray *fc_superviewChain(UIView *v) {
+              NSMutableArray *chain = [NSMutableArray array];
+              for (UIView *a = v; a; a = a.superview) [chain addObject:a];
+              return chain;
+          }
+
+          static UIView *fc_lca(UIView *a, UIView *b) {
+              NSArray *ca = fc_superviewChain(a);
+              NSArray *cb = fc_superviewChain(b);
+              NSUInteger i = ca.count, j = cb.count;
+              UIView *last = nil;
+              while (i > 0 && j > 0 && [ca[i - 1] isEqual:cb[j - 1]]) {
+                  last = ca[i - 1];
+                  i--;
+                  j--;
+              }
+              return last;
+          }
+
+          // The area the 2x2 grid should be centred in: the lowest common
+          // ancestor of the four keys, walking up until it is strictly larger
+          // than the grid bbox (a tight wrapper around the grid is not an area).
+          static UIView *fc_gridArea(NSArray *btns) {
+              if (btns.count != 4) return nil;
+              UIView *lca = btns[0];
+              for (NSUInteger i = 1; i < btns.count; i++) {
+                  lca = fc_lca(lca, btns[i]);
+                  if (!lca) return nil;
+              }
+              CGRect u = CGRectNull;
+              for (UIView *b in btns) {
+                  if (!b.superview) return nil;
+                  u = CGRectUnion(u, [lca convertRect:b.bounds fromView:b]);
+              }
+              if (CGRectIsNull(u) || u.size.width <= 0 || u.size.height <= 0) return nil;
+              UIView *area = lca;
+              while (area && (area.bounds.size.width  <= u.size.width  + 1.0 ||
+                              area.bounds.size.height <= u.size.height + 1.0)) {
+                  area = area.superview;
+              }
+              return area ? area : lca;
+          }
+
+          // Absolute, idempotent centring of the four keys inside `area`.
+          // Every trigger uses the same target, so the paths can never fight
+          // over the position.
+          static void fc_centerGrid(NSArray *btns, UIView *area, NSString *src) {
+              if (btns.count != 4 || !area) return;
+              CGRect b = area.bounds;
+              if (b.size.width <= 0 || b.size.height <= 0) return;
+              CGRect u = CGRectNull;
+              for (UIView *btn in btns) {
+                  if (!btn.superview) return;
+                  u = CGRectUnion(u, [area convertRect:btn.bounds fromView:btn]);
+              }
+              if (CGRectIsNull(u) || u.size.width <= 0 || u.size.height <= 0) return;
+              CGFloat dx = b.size.width  * 0.5 - (u.origin.x + u.size.width  * 0.5);
+              CGFloat dy = b.size.height * 0.5 - (u.origin.y + u.size.height * 0.5);
+              if (fabs(dx) < 0.25 && fabs(dy) < 0.25) return;
+              for (UIView *btn in btns) {
+                  CGPoint c = [area convertPoint:btn.center fromView:btn.superview];
+                  c.x += dx;
+                  c.y += dy;
+                  btn.center = [area convertPoint:c toView:btn.superview];
+              }
+              fc_log([NSString stringWithFormat:@"%@: grid centred in %@ (%.0fx%.0f), move (%+.1f,%+.1f)",
+                      src, NSStringFromClass([area class]),
+                      (double)b.size.width, (double)b.size.height,
+                      (double)dx, (double)dy]);
+          }
+
+          // Nearest ancestor (from `from` upward, inclusive) whose view subtree
+          // holds exactly four round buttons.
+          static BOOL fc_nearestGrid(UIView *from, NSArray **outBtns) {
+              for (UIView *a = from; a; a = a.superview) {
+                  NSMutableArray *tmp = [NSMutableArray array];
+                  fc_collectRoundButtons(a, tmp);
+                  if (tmp.count == 4) {
+                      if (outBtns) *outBtns = tmp;
+                      return YES;
+                  }
+              }
+              return NO;
+          }
+
+          // Re-entrancy guard + burst fail-safe for the position hooks: a
+          // layout that keeps re-positioning the keys after every correction
+          // (e.g. constraint-driven) would otherwise spin forever.
+          static BOOL fc_correcting = NO;
+          static BOOL fcPosFixOff = NO;
+          static NSInteger fc_fixCount = 0;
+          static NSDate *fc_fixWindow = nil;
+
+          static BOOL fc_positionFixAllowed(void) {
+              if (fcPosFixOff) return NO;
+              NSDate *now = [NSDate date];
+              if (!fc_fixWindow || [now timeIntervalSinceDate:fc_fixWindow] > 3.0) {
+                  fc_fixWindow = now;
+                  fc_fixCount = 0;
+              }
+              if (++fc_fixCount > 1000) {
+                  fcPosFixOff = YES;
+                  fc_log(@"position-hook path disabled after burst (>1000 corrections in 3s)");
+                  return NO;
+              }
+              return YES;
+          }
+
+          static void fc_recenterFromButton(UIView *btn) {
+              if (!fcEnabled) return;
+              NSArray *btns = nil;
+              if (!fc_nearestGrid(btn.superview, &btns)) return;
+              UIView *area = fc_gridArea(btns);
+              if (!area) return;
+              fc_centerGrid(btns, area, @"roundButton");
           }
 
           // Rate-limited NSLog for on-device diagnostics. Inspect on the device
@@ -185,18 +313,6 @@ jobs:
           static CGFloat fcRefEdge = 0;
           static CGFloat fcRefSpacing = 0;
 
-          // The enclosing CCUIContentModuleContainerViewController's view, or nil.
-          static UIView *fc_moduleContainerView(UIView *v) {
-              static Class cls = nil;
-              if (!cls) cls = NSClassFromString(@"CCUIContentModuleContainerViewController");
-              if (!cls) return nil;
-              for (UIView *a = v; a; a = a.superview) {
-                  UIResponder *r = a.nextResponder;
-                  if ([r isKindOfClass:cls]) return [(UIViewController *)r view];
-              }
-              return nil;
-          }
-
           @interface CCUIMutableLayoutOptions : NSObject
           - (void)setItemEdgeSize:(CGFloat)edgeSize;
           - (void)setItemSpacing:(CGFloat)itemSpacing;
@@ -218,7 +334,9 @@ jobs:
           @end
 
           @interface CCUILabeledRoundButton : UIView
-          - (void)fc_recenterInSiblings;
+          @end
+
+          @interface CCUIRoundButton : UIView
           @end
 
           @interface CCUIBaseSliderView : UIView
@@ -388,33 +506,9 @@ jobs:
                       NSStringFromClass([self class]), (unsigned long)btns.count,
                       (double)b.size.width, (double)b.size.height]);
               if (btns.count != 4) return;
-
-              // Union bbox of the four keys, converted into the module's own
-              // coordinate space (works through any intermediate views and the
-              // 0.8 scale transform).
-              CGRect u = CGRectNull;
-              for (UIView *btn in btns) {
-                  if (!btn.superview) return;
-                  u = CGRectUnion(u, [v convertRect:btn.bounds fromView:btn]);
-              }
-              if (CGRectIsNull(u) || u.size.width <= 0 || u.size.height <= 0) return;
-
-              // Translate only - keep every key's size and the grid spacing.
-              // This re-centers the 2x2 grid after the stock layout has placed
-              // it off-center, and re-runs on every layout pass so it always wins.
-              CGFloat dx = b.size.width  * 0.5 - (u.origin.x + u.size.width  * 0.5);
-              CGFloat dy = b.size.height * 0.5 - (u.origin.y + u.size.height * 0.5);
-              if (fabs(dx) < 0.25 && fabs(dy) < 0.25) return;
-              fc_log([NSString stringWithFormat:@"container recenter: union (%.0f,%.0f,%.0f,%.0f) move (%+.1f,%+.1f)",
-                      (double)u.origin.x, (double)u.origin.y,
-                      (double)u.size.width, (double)u.size.height,
-                      (double)dx, (double)dy]);
-              for (UIView *btn in btns) {
-                  CGPoint c = [v convertPoint:btn.center fromView:btn.superview];
-                  c.x += dx;
-                  c.y += dy;
-                  btn.center = [v convertPoint:c toView:btn.superview];
-              }
+              UIView *area = fc_gridArea(btns);
+              if (!area) return;
+              fc_centerGrid(btns, area, @"container");
           }
 
           %end
@@ -459,56 +553,55 @@ jobs:
 
           - (void)layoutSubviews {
               %orig;
-              [self fc_recenterInSiblings];
+              if (!fcEnabled || fc_correcting) return;
+              fc_recenterFromButton(self);
           }
 
-          // Second, independent recenter path: fires whenever a key itself
-          // lays out, which also covers the case where the container-level
-          // hook ran before the keys had been positioned. It targets the same
-          // centre (the enclosing module container) as the container hook, so
-          // the two can never fight over the position.
-          %new
-          - (void)fc_recenterInSiblings {
-              if (!fcEnabled) return;
-              UIView *parent = self.superview;
-              if (!parent) return;
+          // A parent can re-position the keys without changing their size,
+          // which never triggers layoutSubviews. Intercept the positioning
+          // itself so the correction survives every layout pass.
+          - (void)setCenter:(CGPoint)center {
+              %orig;
+              if (!fcEnabled || fc_correcting || !fc_positionFixAllowed()) return;
+              fc_correcting = YES;
+              fc_recenterFromButton(self);
+              fc_correcting = NO;
+          }
 
-              // Only the 2x2 connectivity module has four round buttons
-              // sharing one direct parent.
-              NSMutableArray *btns = [NSMutableArray array];
-              Class target = fc_roundButtonClass();
-              if (!target) return;
-              for (UIView *s in parent.subviews) {
-                  if ([s isKindOfClass:target]) [btns addObject:s];
-              }
-              if (btns.count != 4) return;
+          - (void)setFrame:(CGRect)frame {
+              %orig;
+              if (!fcEnabled || fc_correcting || !fc_positionFixAllowed()) return;
+              fc_correcting = YES;
+              fc_recenterFromButton(self);
+              fc_correcting = NO;
+          }
 
-              // Leader election: only the first key moves the group, so the
-              // delta is applied exactly once per pass.
-              if (btns.firstObject != self) return;
+          %end
 
-              UIView *targetView = fc_moduleContainerView(parent);
-              if (!targetView) return;
-              CGRect b = targetView.bounds;
-              if (b.size.width <= 0 || b.size.height <= 0) return;
+          // Same correction for the icon-only round button class, which is
+          // what the connectivity module's keys actually are on iOS 17.
+          %hook CCUIRoundButton
 
-              CGRect u = CGRectNull;
-              for (UIView *btn in btns) {
-                  u = CGRectUnion(u, [targetView convertRect:btn.bounds fromView:btn]);
-              }
-              if (CGRectIsNull(u) || u.size.width <= 0 || u.size.height <= 0) return;
+          - (void)layoutSubviews {
+              %orig;
+              if (!fcEnabled || fc_correcting) return;
+              fc_recenterFromButton(self);
+          }
 
-              CGFloat dx = b.size.width  * 0.5 - (u.origin.x + u.size.width  * 0.5);
-              CGFloat dy = b.size.height * 0.5 - (u.origin.y + u.size.height * 0.5);
-              if (fabs(dx) < 0.25 && fabs(dy) < 0.25) return;
-              for (UIView *btn in btns) {
-                  CGPoint c = [targetView convertPoint:btn.center fromView:btn.superview];
-                  c.x += dx;
-                  c.y += dy;
-                  btn.center = [targetView convertPoint:c toView:btn.superview];
-              }
-              fc_log([NSString stringWithFormat:@"roundButton recenter: parent %@, move (%+.1f,%+.1f)",
-                      NSStringFromClass([parent class]), (double)dx, (double)dy]);
+          - (void)setCenter:(CGPoint)center {
+              %orig;
+              if (!fcEnabled || fc_correcting || !fc_positionFixAllowed()) return;
+              fc_correcting = YES;
+              fc_recenterFromButton(self);
+              fc_correcting = NO;
+          }
+
+          - (void)setFrame:(CGRect)frame {
+              %orig;
+              if (!fcEnabled || fc_correcting || !fc_positionFixAllowed()) return;
+              fc_correcting = YES;
+              fc_recenterFromButton(self);
+              fc_correcting = NO;
           }
 
           %end
@@ -536,12 +629,13 @@ jobs:
 
           %ctor {
               Class optCls = objc_getClass("CCUIMutableLayoutOptions");
-              Class btnCls = fc_roundButtonClass();
+              Class labeledCls = NSClassFromString(@"CCUILabeledRoundButton");
+              Class plainCls = NSClassFromString(@"CCUIRoundButton");
               Class contCls = objc_getClass("CCUIContentModuleContainerViewController");
               Class provCls = objc_getClass("CCUIControlCenterPositionProvider");
-              NSLog(@"[Fivecontrol] init on iOS %@ (options=%d roundButton=%d container=%d provider=%d)",
+              NSLog(@"[Fivecontrol] init on iOS %@ (options=%d labeledRoundButton=%d roundButton=%d container=%d provider=%d)",
                     [UIDevice currentDevice].systemVersion,
-                    optCls != nil, btnCls != nil, contCls != nil, provCls != nil);
+                    optCls != nil, labeledCls != nil, plainCls != nil, contCls != nil, provCls != nil);
               if (!optCls) {
                   NSLog(@"[Fivecontrol] CCUIMutableLayoutOptions not found - layout hook skipped");
               }
